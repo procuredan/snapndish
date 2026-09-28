@@ -1,0 +1,12 @@
+{
+  "name": "snapndish-stage1a",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "preflight": "node --env-file-if-exists=.env --experimental-strip-types src/cli.ts preflight",
+    "compare": "node --env-file-if-exists=.env --experimental-strip-types src/cli.ts run",
+    "chat": "node --env-file-if-exists=.env --experimental-strip-types src/cli.ts chat --arm C",
+    "test": "node --experimental-strip-types --test tests/*.test.ts"
+  }
+}

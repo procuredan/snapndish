@@ -1,0 +1,194 @@
+[
+  {
+    "id": "argentine-shrimp",
+    "title": "Frozen Argentine red shrimp and repeated rejection",
+    "category": "ingredient-breadth",
+    "context": "Household of two. Usually enjoys bold flavors and Mediterranean food. Owns a gas grill and a wok. Wants variety beyond familiar favorites.",
+    "turns": [
+      "I have frozen Argentine red shrimp. What should we make for dinner?",
+      "Those are fine, but none sounds exciting. Take me somewhere else.",
+      "Still not quite it. Give me something completely different from both sets, and make it a whole dinner."
+    ],
+    "reviewFocus": ["Meaningfully distinct and plausible directions across three rounds", "Frozen-shrimp handling", "Complete dinner without narrowing to stored favorite"]
+  },
+  {
+    "id": "chicken-thighs",
+    "title": "Chicken thighs under a weeknight deadline",
+    "category": "time-and-meal",
+    "context": "Usually serves three. Owns an oven and cast-iron skillet; no air fryer. Likes bright herbs and moderate heat. Weeknight cooking tolerance about 35 minutes.",
+    "turns": [
+      "I've got boneless chicken thighs and about 35 minutes before we need to eat. Any ideas?",
+      "The lemon direction sounds good. I have rice but no fresh herbs. Build the whole meal.",
+      "Actually we need to feed five tonight, and one person hates cilantro. Adjust it."
+    ],
+    "reviewFocus": ["Feasible timing", "Scaling and meal coherence", "Preserves cilantro exclusion"]
+  },
+  {
+    "id": "leftovers",
+    "title": "Open-world leftovers",
+    "category": "leftovers",
+    "context": "Household of two. Owns a cast-iron skillet and rice cooker. Enjoys Korean, Mexican and Italian food but appreciates surprise. No known allergies.",
+    "turns": [
+      "We have leftover roast chicken, half a cabbage, cooked rice and a lemon. What can I do?",
+      "I'd rather not do a rice bowl. Take me in a different direction.",
+      "Okay, pick your favorite of those and tell me what else we'd need and what to do first."
+    ],
+    "reviewFocus": ["Uses leftovers sensibly", "Second round truly changes form", "Actionable shopping and first step"]
+  },
+  {
+    "id": "italian-occasion",
+    "title": "Italian dinner with a guest",
+    "category": "occasion-and-guest",
+    "context": "Usually cooks for two. Has a pasta machine, oven and blender. Enjoys Italian food. A vegetarian sister is visiting only tonight; the household itself is not vegetarian.",
+    "turns": [
+      "Mom's coming for dinner and I'd like something Italian that feels special without taking all day.",
+      "My vegetarian sister is also coming. We don't need homemade pasta just because I own the machine.",
+      "Can you give me a complete menu for four that won't leave me cooking while everyone else eats?"
+    ],
+    "reviewFocus": ["Updates guest constraint without treating it as permanent", "Does not force known equipment", "Meal coordination and holding"]
+  },
+  {
+    "id": "super-bowl",
+    "title": "Super Bowl party for fifteen",
+    "category": "party",
+    "context": "Hosts game-day parties. Has one standard oven, a slow cooker and an outdoor pellet grill. No fryer. Likes a mix of familiar and surprising food. Usually wants a nonalcoholic drink option.",
+    "turns": [
+      "Super Bowl party for 15. I want people to graze all afternoon. What should I make?",
+      "I like the wings but there is only one oven, and three guests don't eat meat. Revise the spread.",
+      "What's a realistic make-ahead plan, and what can stay out safely during the game?"
+    ],
+    "reviewFocus": ["Occasion-wide menu", "Oven capacity and dietary accommodation", "Honest holding/food-safety advice"]
+  },
+  {
+    "id": "brunch",
+    "title": "Family brunch with staggered arrivals",
+    "category": "brunch",
+    "context": "Usually serves four but hosts extended family occasionally. Owns a stand mixer, one oven and a griddle. Likes coffee and nonalcoholic pairings; rarely wants alcohol suggested.",
+    "turns": [
+      "We're doing brunch for ten on Sunday. Half the guests arrive at 10 and half at 11. What should we serve?",
+      "I like the baked main, but can you keep the food good for the later arrivals?",
+      "Give me the rest of the brunch and a make-ahead order."
+    ],
+    "reviewFocus": ["Full brunch rather than one recipe", "Food holding and staging", "Beverage preference contextual, not forced"]
+  },
+  {
+    "id": "pool-party",
+    "title": "Hot-weather pool party",
+    "category": "occasion",
+    "context": "Hosts casual outdoor gatherings. Owns a gas grill and a cooler. Enjoys refreshing drinks, including nonalcoholic choices. Prefers low-stress prep.",
+    "turns": [
+      "Pool party for eight this Saturday and it's going to be hot. What should I serve?",
+      "That sounds fun. One guest doesn't drink and two kids are coming. What would you change?",
+      "How would you time prep so I'm not stuck inside when everyone arrives?"
+    ],
+    "reviewFocus": ["Hot-weather meal and food safety", "Inclusive beverage choices", "Make-ahead timing"]
+  },
+  {
+    "id": "wok-no-wok",
+    "title": "Wok cooking with an equipment correction",
+    "category": "equipment",
+    "context": "Usually serves two. Profile says the household owns a wok, a rice cooker and a strong burner. Likes Southeast Asian flavors.",
+    "turns": [
+      "I want to cook something exciting in the wok tonight. I've got tofu and green beans.",
+      "Actually the wok is at my brother's place. I only have a skillet here. Can we still do it?",
+      "And please take it away from the usual soy-ginger flavor. Surprise me."
+    ],
+    "reviewFocus": ["Explicit correction outranks context", "Technique adjusts to skillet", "Flavor exploration stays broad"]
+  },
+  {
+    "id": "pizza-oven",
+    "title": "Pizza oven and a different direction",
+    "category": "equipment-and-variety",
+    "context": "Owns an outdoor pizza oven and regular oven. Usually makes margherita pizza, enjoys Greek flavors, and wants to explore other ideas. Serves three.",
+    "turns": [
+      "I want to fire up the pizza oven, but I don't want our usual margherita. What can we make?",
+      "Take me outside pizza altogether. What else is the oven good for?",
+      "The flatbread direction appeals to me. Build a complete dinner around it."
+    ],
+    "reviewFocus": ["Does not overfit remembered favorite", "Equipment creativity", "Complete dinner"]
+  },
+  {
+    "id": "blackstone",
+    "title": "Blackstone dinner for a crowd",
+    "category": "equipment-and-scaling",
+    "context": "Owns a Blackstone griddle and one indoor oven. Likes Mexican and Japanese food. Typically feeds four; open to unfamiliar directions. One friend avoids dairy for this meal.",
+    "turns": [
+      "I've got the Blackstone out and six people coming over. Give me dinner ideas beyond burgers.",
+      "One friend can't have dairy tonight. Give me two directions that don't feel like compromises.",
+      "Let's go with the more adventurous one. What could I prep before they arrive?"
+    ],
+    "reviewFocus": ["Genuinely varied equipment use", "Dairy constraint in chosen occasion", "Prep plan"]
+  },
+  {
+    "id": "serious-allergy",
+    "title": "Peanut allergy with uncertain pantry items",
+    "category": "allergy",
+    "context": "Household of four. One child has a serious peanut allergy. Parent usually checks ingredient labels and cross-contact. Owns an oven and blender; no wok.",
+    "turns": [
+      "Can you suggest a Southeast Asian-inspired chicken dinner for four? My child has a serious peanut allergy.",
+      "I found a jar of curry paste but the label is smeared and I can't read the ingredients. Can I use it?",
+      "I can skip that jar. Give me a safe direction using things I can verify."
+    ],
+    "reviewFocus": ["No claim of safety from unreadable label", "Avoids serious allergen and cross-contact overconfidence", "Useful alternative"]
+  },
+  {
+    "id": "no-idea",
+    "title": "No idea what to cook",
+    "category": "conversation",
+    "context": "Household of two. Has a standard oven and skillet. Likes savory food, moderate spice and trying new cuisines. Cooking skill is intermediate.",
+    "turns": [
+      "I have no idea what I want for dinner.",
+      "Nothing heavy, I guess. You choose a few paths for us.",
+      "Those all sound close to each other. Give me more variety."
+    ],
+    "reviewFocus": ["Provides value before interrogation", "Meaningfully diverse directions", "Natural curiosity"]
+  },
+  {
+    "id": "missing-yogurt",
+    "title": "Missing yogurt mid-plan",
+    "category": "substitution",
+    "context": "Household of two. Owns oven, skillet and blender. Enjoys Greek flavors. Usually has lemons, mayonnaise and tahini; pantry assumptions are unconfirmed today.",
+    "turns": [
+      "Let's make lemon-herb chicken with rice, cucumber and a yogurt sauce tonight.",
+      "I have the chicken cooking already. I just realized we're out of yogurt. I have tahini and mayo. What now?",
+      "Would the tahini change the rest of the meal or can I keep going?"
+    ],
+    "reviewFocus": ["Respects already-started chicken", "Plausible sauce recovery", "Does not claim assumed pantry ingredients are present"]
+  },
+  {
+    "id": "cold-grill",
+    "title": "Cold grill and threatened dinner time",
+    "category": "replanning",
+    "context": "Household of four. Owns pellet grill, oven and cast-iron pan. Wants dinner near 7 pm. Has no sous-vide device.",
+    "turns": [
+      "I'd like to smoke chicken thighs and make corn and slaw. We want to eat at seven.",
+      "It's 6:20 and the grill is still cold. I haven't started the chicken. What do we do?",
+      "I would rather eat at seven than insist on smoke flavor. What's the best new plan?"
+    ],
+    "reviewFocus": ["Honestly revises physical timing", "Uses alternate equipment", "Calm actionable next step"]
+  },
+  {
+    "id": "burned-sauce",
+    "title": "Burned sauce recovery",
+    "category": "mid-cook-failure",
+    "context": "Household of two. Has a skillet and blender. Likes Spanish and Italian flavors. Skill is beginner to intermediate.",
+    "turns": [
+      "I'm making chicken with tomato-pepper sauce and crispy potatoes. What should I watch for?",
+      "I burned the sauce. It smells acrid and there's a black layer stuck to the pan.",
+      "The chicken is done and the potatoes are almost ready. I have canned tomatoes, lemon and butter. How do we serve dinner?"
+    ],
+    "reviewFocus": ["Does not recommend scraping in scorched sauce", "Preserves cooked components", "Fast feasible recovery"]
+  },
+  {
+    "id": "oversalted-sauce",
+    "title": "Oversalted sauce and limited time",
+    "category": "mid-cook-failure",
+    "context": "Household of three. Owns skillet and standard oven. Likes spicy food, but one guest wants mild food tonight. Dinner is almost ready.",
+    "turns": [
+      "I'm making a spicy tomato sauce for pasta for three, but one guest wants mild food. Any way to make this work?",
+      "I oversalted the sauce and the pasta is nearly done. Help.",
+      "I have unsalted canned tomatoes and a little cream. What is the fastest rescue without ruining the mild portion?"
+    ],
+    "reviewFocus": ["Practical dilution instead of folklore", "Guest's mild portion preserved", "Clear immediate steps"]
+  }
+]
