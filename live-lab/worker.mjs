@@ -1,4 +1,4 @@
-import { instructionsFor, estimateUsd, BEHAVIOR_VERSION, CONTEXT_VERSION, SCENARIO_VERSION } from '../src/config.ts';
+import { instructionsFor, instructionsForCandidate, estimateUsd, BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, CONTEXT_VERSION, SCENARIO_VERSION } from '../src/config.ts';
 import { page } from './ui.mjs';
 
 const DAY = 86_400_000;
@@ -103,9 +103,30 @@ async function createSession(request, env) {
 async function showSession(env, id) {
   const session = await getSession(env.DB, id);
   if (!session) return json({ error: 'NOT_FOUND' }, 404);
-  const turns = await env.DB.prepare('SELECT id,role,text,created_at,revision FROM turns WHERE session_id=? ORDER BY created_at,id')
-    .bind(id).all();
-  return json({ ...publicSession(session), turns: turns.results ?? [] });
+  const [turns, feedback] = await Promise.all([
+    env.DB.prepare('SELECT id,role,text,created_at,revision FROM turns WHERE session_id=? ORDER BY created_at,id').bind(id).all(),
+    env.DB.prepare("SELECT turn_id,details_json FROM state_events WHERE session_id=? AND kind='turn_feedback' ORDER BY rowid").bind(id).all(),
+  ]);
+  const latest = new Map();
+  for (const f of feedback.results ?? []) latest.set(f.turn_id, JSON.parse(f.details_json).rating);
+  return json({ ...publicSession(session), turns: (turns.results ?? []).map(t => t.role === 'assistant'
+    ? { ...t, feedback: latest.get(t.id) ?? null } : t) });
+}
+
+async function recordFeedback(request, env, sessionId, assistantTurnId) {
+  const input = await bodyJson(request);
+  if (!['good', 'missed_it'].includes(input?.rating)) return json({ error: 'INVALID_FEEDBACK' }, 400);
+  const session = await getSession(env.DB, sessionId);
+  if (!session) return json({ error: 'NOT_FOUND' }, 404);
+  const turn = await env.DB.prepare("SELECT id,revision FROM turns WHERE id=? AND session_id=? AND role='assistant'")
+    .bind(assistantTurnId, sessionId).first();
+  if (!turn) return json({ error: 'NOT_FOUND' }, 404);
+  const prior = await env.DB.prepare("SELECT details_json FROM state_events WHERE session_id=? AND turn_id=? AND kind='turn_feedback' ORDER BY rowid DESC LIMIT 1")
+    .bind(sessionId, assistantTurnId).first();
+  if (prior && JSON.parse(prior.details_json).rating === input.rating)
+    return json({ turnId: assistantTurnId, rating: input.rating });
+  await event(env.DB, sessionId, assistantTurnId, turn.revision, 'turn_feedback', { rating: input.rating });
+  return json({ turnId: assistantTurnId, rating: input.rating });
 }
 
 async function listSessions(env) {
@@ -153,6 +174,15 @@ function firstUsefulProxy(text) {
   return text.length >= 50 && (/[.!?](?:\s|$)/.test(text) || /\n\s*[-*]/.test(text));
 }
 
+function behaviorFor(env, context) {
+  const version = env.BEHAVIOR_VERSION || BEHAVIOR_VERSION;
+  if (version === CANDIDATE_BEHAVIOR_VERSION && (!env.ARM || env.ARM === 'C'))
+    return { version, instructions: instructionsForCandidate(context) };
+  if (version === BEHAVIOR_VERSION)
+    return { version, instructions: instructionsFor(env.ARM || 'C', context) };
+  throw new Error('INVALID_BEHAVIOR_CONFIGURATION');
+}
+
 async function acceptTurn(env, id, input) {
   const session = await getSession(env.DB, id);
   if (!session) return { response: json({ error: 'NOT_FOUND' }, 404) };
@@ -190,22 +220,25 @@ async function acceptTurn(env, id, input) {
 
 async function streamTurn(request, env, ctx, id) {
   if (!env.OPENAI_API_KEY) return json({ error: 'MODEL_UNAVAILABLE' }, 503);
+  if (![BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION].includes(env.BEHAVIOR_VERSION || BEHAVIOR_VERSION)
+    || (env.BEHAVIOR_VERSION === CANDIDATE_BEHAVIOR_VERSION && env.ARM && env.ARM !== 'C'))
+    return json({ error: 'INVALID_BEHAVIOR_CONFIGURATION' }, 503);
   const input = await bodyJson(request);
   const accepted = await acceptTurn(env, id, input);
   if (accepted.response) return accepted.response;
   const { session, turnId, revision, messages } = accepted;
   const model = env.MODEL || 'gpt-6-astra';
   const effort = env.REASONING_EFFORT || 'medium';
-  const behavior = env.ARM || 'C';
   const contextText = session.customer_context || 'No saved customer facts provided yet.';
-  const prompt = instructionsFor(behavior, contextText);
+  const behavior = behaviorFor(env, contextText);
+  const prompt = behavior.instructions;
   const callId = crypto.randomUUID();
   const requestedAt = now();
   await env.DB.prepare(`INSERT INTO model_calls
     (id,session_id,user_turn_id,revision,requested_at,status,requested_model,behavior_version,context_version,
      reasoning_effort,customer_context_snapshot,memory_retrieved,tool_calls_json)
      VALUES (?,?,?,?,?,'pending',?,?,?,?,?,?,?)`)
-    .bind(callId, id, turnId, revision, requestedAt, model, BEHAVIOR_VERSION, CONTEXT_VERSION,
+    .bind(callId, id, turnId, revision, requestedAt, model, behavior.version, CONTEXT_VERSION,
       effort, session.customer_context, 'none — no memory store in Stage 1A', '[]').run();
 
   const abort = new AbortController();
@@ -311,7 +344,7 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname === '/health') return json({ status: 'ok', stage: '1A-live-lab', model: env.MODEL || 'gpt-6-astra',
-      behavior_version: BEHAVIOR_VERSION, context_version: CONTEXT_VERSION, scenario_version: SCENARIO_VERSION });
+      behavior_version: env.BEHAVIOR_VERSION || BEHAVIOR_VERSION, context_version: CONTEXT_VERSION, scenario_version: SCENARIO_VERSION });
     if (!env.DB || !env.LAB_ACCESS_CODE || !env.COOKIE_SIGNING_KEY) return json({ error: 'LAB_NOT_CONFIGURED' }, 503);
     if (request.method !== 'GET' && !sameOrigin(request)) return json({ error: 'ORIGIN_REQUIRED' }, 403);
     if (url.pathname === '/' && request.method === 'GET') return html('chat');
@@ -338,6 +371,10 @@ export default {
     const turn = url.pathname.match(/^\/api\/sessions\/([0-9a-f-]{36})\/turns$/i);
     if (turn && request.method === 'POST')
       return await authorizedSession(request, env.COOKIE_SIGNING_KEY, turn[1]) ? streamTurn(request, env, ctx, turn[1]) : json({ error: 'NOT_FOUND' }, 404);
+    const feedback = url.pathname.match(/^\/api\/sessions\/([0-9a-f-]{36})\/turns\/([0-9a-f-]{36})\/feedback$/i);
+    if (feedback && request.method === 'POST')
+      return await authorizedSession(request, env.COOKIE_SIGNING_KEY, feedback[1])
+        ? recordFeedback(request, env, feedback[1], feedback[2]) : json({ error: 'NOT_FOUND' }, 404);
     return json({ error: 'NOT_FOUND' }, 404);
   },
   async scheduled(_event, env) {

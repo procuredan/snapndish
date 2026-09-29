@@ -36,6 +36,7 @@
   "vars": {
     "MODEL": "gpt-6-astra",
     "REASONING_EFFORT": "medium",
+    "BEHAVIOR_VERSION": "stage1a-snap-v2",
     "ARM": "C"
   }
 }

@@ -126,6 +126,15 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 - **Depends / reconsider:** Measured API run, blind owner judgment, regression diagnosis and separate release authorization. The two-turn pork example is a behavioral reference, not a lexical answer key.
 - **Supersedes:** None.
 
+### SNDISH-014 — Controlled Live Lab promotion of v2 with one-tap feedback
+
+- **Date / owner:** 2026-09-29; Snap n Dish product owner, via explicit change of evaluation strategy and release authorization.
+- **Decision:** Preserve the completed offline v2 comparison, blind artifacts, and mapping unchanged. Promote `stage1a-snap-v2` to the existing Stage 1A Live Lab after automated and focused behavioral regression checks and a staging-first rendered verification. Keep v1 code and the recorded v1 Worker version available for immediate rollback. Add unobtrusive Good / Missed It feedback on an accepted assistant turn, with a single tap recorded under that session and visible only to its visitor and protected owner review. Live owner use becomes the primary quality discovery; preserve any material failure as a regression case before correction. Offline evaluation remains a regression guardrail, not a recurring owner-scoring obligation.
+- **Existing authority and extension:** The Worker owns accepted conversation revision, model-call telemetry, and append-only `state_events`. It will select the existing v2 prompt and version while keeping model, context, streaming, privacy, and state acceptance behavior. Feedback uses the existing state-event store and retention, with no schema migration or new identity system.
+- **Regression surface / proof:** Discovery versus premature recipe, direct questions, recovery, allergy, selection, stale-result rejection, visitor isolation, protected review, response streaming, version/cost telemetry, and flag persistence. Run local automated tests, the focused behavior suite, staging rendered conversation and feedback/telemetry checks, then the same live checks.
+- **Rollback / recovery:** Roll back the Worker to the verified prior v1 deployment version if behavior or security regresses; feedback events remain in D1 under the existing 30-day retention. No schema or destructive data change occurs. If the Worker must close, use the recorded closed version from the Live Lab runbook.
+- **Supersedes:** `SNDISH-013` only for its requirement to wait for exhaustive owner blind scoring and its no-deployment pause. The offline evidence and Stage 1B prohibition remain in force.
+
 ## Open decisions — no authority may be invented
 
 1. Stage 1A quality result and owner benchmark/human review; the current prototype tests are not that decision.

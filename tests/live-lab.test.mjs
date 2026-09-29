@@ -37,7 +37,7 @@ class TestDB {
 const origin = 'https://lab.test';
 const accessCode = 'test-owner-access-code-with-sufficient-length';
 const env = () => ({ DB: new TestDB(), LAB_ACCESS_CODE: accessCode, COOKIE_SIGNING_KEY: 'test-signing-key-with-sufficient-length',
-  OPENAI_API_KEY: 'test-api-key', MODEL: 'gpt-6-astra', REASONING_EFFORT: 'medium', ARM: 'C' });
+  OPENAI_API_KEY: 'test-api-key', MODEL: 'gpt-6-astra', REASONING_EFFORT: 'medium', BEHAVIOR_VERSION: 'stage1a-snap-v2', ARM: 'C' });
 function context() {
   const tasks = [];
   return { waitUntil(p) { tasks.push(p); }, async settle() { await Promise.all(tasks); } };
@@ -77,6 +77,8 @@ test('public chat, isolated visitor sessions, and protected owner review', async
   assert.equal(home.status, 200);
   const html = await home.text();
   assert.match(html, /What are we making\?/);
+  assert.match(html, /Missed It/);
+  assert.equal((await (await worker.fetch(req('/health'), e, context())).json()).behavior_version, 'stage1a-snap-v2');
   assert.doesNotMatch(html, /Review sessions|Owner sign in/);
   assert.equal((await worker.fetch(req('/api/sessions'), e, context())).status, 404);
   assert.equal((await worker.fetch(req('/api/review/sessions'), e, context())).status, 401);
@@ -107,6 +109,29 @@ test('all rendered pages contain parseable client scripts', () => {
   }
 });
 
+test('behavior selection keeps v1 available and rejects invalid config before accepting a turn', async () => {
+  const e = env();
+  const { id, cookie } = await createVisitorSession(e, 'A skillet.');
+  e.BEHAVIOR_VERSION = 'unknown';
+  const invalid = await worker.fetch(req(`/api/sessions/${id}/turns`, 'POST',
+    { text: 'Dinner?', turnId: crypto.randomUUID(), expectedRevision: 0 }, cookie), e, context());
+  assert.equal(invalid.status, 503);
+  assert.equal(e.DB.raw.prepare('SELECT revision FROM sessions WHERE id=?').get(id).revision, 0);
+  assert.equal(e.DB.raw.prepare('SELECT COUNT(*) AS n FROM turns').get().n, 0);
+  e.BEHAVIOR_VERSION = 'stage1a-snap-v1';
+  const original = globalThis.fetch;
+  globalThis.fetch = async (_url, init) => {
+    assert.doesNotMatch(JSON.parse(init.body).instructions, /next decision or action/);
+    return providerStream('Try chicken thighs with crisp potatoes and a bright salad.');
+  };
+  try {
+    const response = await worker.fetch(req(`/api/sessions/${id}/turns`, 'POST',
+      { text: 'Dinner?', turnId: crypto.randomUUID(), expectedRevision: 0 }, cookie), e, context());
+    assert.match(await response.text(), /"type":"complete"/);
+  } finally { globalThis.fetch = original; }
+  assert.equal(e.DB.raw.prepare('SELECT behavior_version FROM model_calls').get().behavior_version, 'stage1a-snap-v1');
+});
+
 test('streamed reply records model output separately from accepted conversation state', async () => {
   const e = env(), ctx = context();
   const { id, cookie } = await createVisitorSession(e, 'Two people, skillet, loves surprising flavors.', ctx);
@@ -117,6 +142,7 @@ test('streamed reply records model output separately from accepted conversation 
     assert.equal(input.stream, true);
     assert.equal(input.store, false);
     assert.match(input.instructions, /Two people, skillet/);
+    assert.match(input.instructions, /next decision or action/);
     return providerStream('Let us make smoky fish tacos with bright cabbage slaw tonight. Start with the slaw.');
   };
   try {
@@ -131,6 +157,7 @@ test('streamed reply records model output separately from accepted conversation 
   assert.deepEqual(saved.turns.map(t => t.role), ['user', 'assistant']);
   const call = e.DB.raw.prepare('SELECT * FROM model_calls').get();
   assert.equal(call.status, 'accepted');
+  assert.equal(call.behavior_version, 'stage1a-snap-v2');
   assert.equal(call.customer_context_snapshot, 'Two people, skillet, loves surprising flavors.');
   assert.equal(call.output_tokens, 80);
   assert.ok(call.first_text_ms !== null);
@@ -139,6 +166,40 @@ test('streamed reply records model output separately from accepted conversation 
   assert.ok(call.estimated_usd > 0);
   assert.deepEqual(e.DB.raw.prepare('SELECT kind FROM state_events ORDER BY at,id').all().map(x => x.kind).sort(),
     ['assistant_turn_accepted', 'session_created', 'user_turn_accepted']);
+});
+
+test('one-tap feedback belongs to an accepted reply and the visitor session', async () => {
+  const e = env(), ctx = context();
+  const first = await createVisitorSession(e, 'A skillet.', ctx);
+  const second = await createVisitorSession(e, 'A wok.', ctx);
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => providerStream('Try crispy shrimp with a lemony rice and cucumber salad.');
+  try {
+    const response = await worker.fetch(req(`/api/sessions/${first.id}/turns`, 'POST',
+      { text: 'Dinner?', turnId: crypto.randomUUID(), expectedRevision: 0 }, first.cookie), e, ctx);
+    assert.match(await response.text(), /"type":"complete"/);
+    await ctx.settle();
+  } finally { globalThis.fetch = original; }
+  const saved = await (await worker.fetch(req(`/api/sessions/${first.id}`, 'GET', undefined, first.cookie), e, context())).json();
+  const assistant = saved.turns.find(t => t.role === 'assistant');
+  const user = saved.turns.find(t => t.role === 'user');
+  const path = `/api/sessions/${first.id}/turns/${assistant.id}/feedback`;
+  assert.equal((await worker.fetch(req(path, 'POST', { rating: 'good' }), e, context())).status, 404);
+  assert.equal((await worker.fetch(req(path, 'POST', { rating: 'good' }, second.cookie), e, context())).status, 404);
+  assert.equal((await worker.fetch(req(`/api/sessions/${first.id}/turns/${user.id}/feedback`, 'POST',
+    { rating: 'good' }, first.cookie), e, context())).status, 404);
+  assert.equal((await worker.fetch(req(path, 'POST', { rating: 'stars' }, first.cookie), e, context())).status, 400);
+  assert.equal((await worker.fetch(req(path, 'POST', { rating: 'good' }, first.cookie), e, context())).status, 200);
+  assert.equal((await worker.fetch(req(path, 'POST', { rating: 'good' }, first.cookie), e, context())).status, 200);
+  assert.equal(e.DB.raw.prepare("SELECT COUNT(*) AS n FROM state_events WHERE kind='turn_feedback'").get().n, 1);
+  assert.equal((await worker.fetch(req(path, 'POST', { rating: 'missed_it' }, first.cookie), e, context())).status, 200);
+  const updated = await (await worker.fetch(req(`/api/sessions/${first.id}`, 'GET', undefined, first.cookie), e, context())).json();
+  assert.equal(updated.turns.find(t => t.id === assistant.id).feedback, 'missed_it');
+  assert.equal(updated.revision, 1);
+  const reviewCookie = await reviewLogin(e);
+  const reviewed = await (await worker.fetch(req(`/api/review/sessions/${first.id}`, 'GET', undefined, reviewCookie), e, context())).json();
+  assert.equal(reviewed.timeline.filter(t => t.kind === 'state_turn_feedback').length, 2);
+  assert.equal(e.DB.raw.prepare("SELECT COUNT(*) AS n FROM state_events WHERE kind='turn_feedback'").get().n, 2);
 });
 
 test('newer revision rejects a late model result while retaining its audit record', async () => {
