@@ -104,7 +104,7 @@ async function showSession(env, id) {
   const session = await getSession(env.DB, id);
   if (!session) return json({ error: 'NOT_FOUND' }, 404);
   const [turns, feedback] = await Promise.all([
-    env.DB.prepare('SELECT id,role,text,created_at,revision FROM turns WHERE session_id=? ORDER BY created_at,id').bind(id).all(),
+    env.DB.prepare("SELECT id,role,text,created_at,revision FROM turns WHERE session_id=? ORDER BY revision,CASE role WHEN 'user' THEN 0 ELSE 1 END,created_at,id").bind(id).all(),
     env.DB.prepare("SELECT turn_id,details_json FROM state_events WHERE session_id=? AND kind='turn_feedback' ORDER BY rowid").bind(id).all(),
   ]);
   const latest = new Map();
@@ -141,7 +141,7 @@ async function reviewSession(env, id) {
   const session = await getSession(env.DB, id);
   if (!session) return json({ error: 'NOT_FOUND' }, 404);
   const [turns, calls, events] = await Promise.all([
-    env.DB.prepare('SELECT * FROM turns WHERE session_id=? ORDER BY created_at,id').bind(id).all(),
+    env.DB.prepare("SELECT * FROM turns WHERE session_id=? ORDER BY revision,CASE role WHEN 'user' THEN 0 ELSE 1 END,created_at,id").bind(id).all(),
     env.DB.prepare('SELECT * FROM model_calls WHERE session_id=? ORDER BY requested_at,id').bind(id).all(),
     env.DB.prepare('SELECT * FROM state_events WHERE session_id=? ORDER BY at,id').bind(id).all(),
   ]);
@@ -192,7 +192,7 @@ async function acceptTurn(env, id, input) {
     return { response: json({ error: 'INVALID_TURN' }, 400) };
   if (!Number.isInteger(input.expectedRevision) || input.expectedRevision !== session.revision)
     return { response: json({ error: 'STALE_REVISION', revision: session.revision }, 409) };
-  const prior = await env.DB.prepare('SELECT role,text FROM turns WHERE session_id=? ORDER BY created_at,id').bind(id).all();
+  const prior = await env.DB.prepare("SELECT role,text FROM turns WHERE session_id=? ORDER BY revision,CASE role WHEN 'user' THEN 0 ELSE 1 END,created_at,id").bind(id).all();
   const userCount = (prior.results ?? []).filter(t => t.role === 'user').length;
   if (userCount >= 50) return { response: json({ error: 'SESSION_LIMIT' }, 429) };
   const today = now().slice(0, 10);

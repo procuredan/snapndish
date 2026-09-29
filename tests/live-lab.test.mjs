@@ -132,6 +132,30 @@ test('behavior selection keeps v1 available and rejects invalid config before ac
   assert.equal(e.DB.raw.prepare('SELECT behavior_version FROM model_calls').get().behavior_version, 'stage1a-snap-v1');
 });
 
+test('same-millisecond turns retain conversation order in display and model context', async () => {
+  const e = env();
+  const { id, cookie } = await createVisitorSession(e, 'A skillet.');
+  const at = '2026-09-29T12:00:00.000Z';
+  e.DB.raw.prepare('INSERT INTO turns (id,session_id,revision,role,text,created_at) VALUES (?,?,?,?,?,?)')
+    .run('ffffffff-ffff-4fff-8fff-ffffffffffff', id, 1, 'user', 'Chicken thighs.', at);
+  e.DB.raw.prepare('INSERT INTO turns (id,session_id,revision,role,text,created_at) VALUES (?,?,?,?,?,?)')
+    .run('00000000-0000-4000-8000-000000000000', id, 1, 'assistant', 'Try lemon chicken.', at);
+  e.DB.raw.prepare('UPDATE sessions SET revision=1,last_turn_id=? WHERE id=?')
+    .run('ffffffff-ffff-4fff-8fff-ffffffffffff', id);
+  const saved = await (await worker.fetch(req(`/api/sessions/${id}`, 'GET', undefined, cookie), e, context())).json();
+  assert.deepEqual(saved.turns.map(t => t.role), ['user', 'assistant']);
+  const original = globalThis.fetch;
+  globalThis.fetch = async (_url, init) => {
+    assert.deepEqual(JSON.parse(init.body).input.map(m => m.role), ['user', 'assistant', 'user']);
+    return providerStream('Use a skillet for crispy chicken thighs.');
+  };
+  try {
+    const response = await worker.fetch(req(`/api/sessions/${id}/turns`, 'POST',
+      { text: 'How should I cook them?', turnId: crypto.randomUUID(), expectedRevision: 1 }, cookie), e, context());
+    assert.match(await response.text(), /"type":"complete"/);
+  } finally { globalThis.fetch = original; }
+});
+
 test('streamed reply records model output separately from accepted conversation state', async () => {
   const e = env(), ctx = context();
   const { id, cookie } = await createVisitorSession(e, 'Two people, skillet, loves surprising flavors.', ctx);
