@@ -99,11 +99,20 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 - **Depends / reconsider:** Stage 1A run and human review; reconsider after measured results and a new owner instruction.
 - **Supersedes:** `SNDISH-007` only for its temporary governance-review pause. Its Stage 1A proof gate and Stage 1B restriction remain in force.
 
+### SNDISH-011 — Private Stage 1A Live Lab
+
+- **Date / owner:** 2026-09-29; Snap n Dish product owner, via explicit Live Lab authorization.
+- **Decision:** Add a private, instrumented, streaming Stage 1A experience at `app.snapndish.com` using the existing Arm C behavior and context by default. Keep the controlled A/B/C corpus and results. Store distinguishable model/conversation/state telemetry with a defined retention period, provide chronological owner review, protect access, use Snap n Dish-specific staging and live resources, and verify the rendered journey after staging-first deployment. Report telemetry, privacy, security, rollback and verification before deploying.
+- **Reason:** Owner testing should generate direct product-experience evidence without pretending the culinary gate or Stage 1B has passed.
+- **Excluded alternative:** Public beta, Stage 1B, broader production app, voice/audio retention, Snap n Done resources, or automatic CI deployment.
+- **Depends / reconsider:** Blind owner review and Live Lab evidence; later architecture and deployment require separate authorization. The proposed Live Lab retention is 30 days, subject to documented D1 Time Travel availability beyond application deletion.
+- **Supersedes:** `SNDISH-010` only for its prior prohibition on Stage 1A staging/live deployment; its Stage 1B prohibition remains in force.
+
 ## Open decisions — no authority may be invented
 
 1. Stage 1A quality result and owner benchmark/human review; the current prototype tests are not that decision.
 2. Production identity and exact Procure parent-profile consent, access, provenance, correction and deletion boundaries.
 3. Retention/deletion periods and executor for images, speech/transcripts, conversation, customer facts, logs and vendor copies.
-4. Concrete Snap n Dish staging/prod resources, release artifact and rollback/restore procedure.
+4. General product staging/prod resources, release artifact and rollback/restore procedure beyond this isolated Stage 1A Lab.
 5. Realtime voice, image, and notification providers and limits after the appropriate prototype gate.
 6. Owner-approved culinary quality, latency and full-session cost thresholds.

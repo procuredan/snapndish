@@ -4,4 +4,7 @@ runs/
 .env.*
 !.env.example
 .dev.vars
+.dev.vars.*
+.wrangler/
+lab-secrets*
 .DS_Store

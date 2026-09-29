@@ -1,9 +1,9 @@
 # Snap n Dish — current architecture and authority register
 
-**Reconciled:** 2026-09-28. **Status:** Stage 1A private prototype only.
+**Reconciled:** 2026-09-29. **Status:** Stage 1A controlled evaluation and private Live Lab implementation; deployment must be verified separately.
 **Governance:** [SNAP_GLOBAL_RULES.md](SNAP_GLOBAL_RULES.md). **Decisions:** [SNAP_DECISION_LOG.md](SNAP_DECISION_LOG.md).
 
-This document describes what exists and marks future product boundaries separately. It does not authorize Stage 1B, a production build, or deployment. Code and observed runtime remain implementation evidence; an old plan is not proof of current behavior.
+This document describes what exists and marks future product boundaries separately. The owner has authorized the private Stage 1A Live Lab at `app.snapndish.com`; that authorization does not include Stage 1B or a broader production build. Code and observed runtime remain implementation evidence; an old plan is not proof of current behavior.
 
 ## Evidence convention
 
@@ -13,9 +13,9 @@ This document describes what exists and marks future product boundaries separate
 
 **VERIFIED:** This repository currently holds a dependency-free Node/TypeScript CLI, synthetic scenario corpus, local test suite, and evaluation protocol. `src/cli.ts` offers preflight, three-arm run, private terminal chat, and report regeneration. `src/config.ts` defines A (minimal foundation reference), B (Snap behavior), C (B plus explicit fixture context), versions, and a dated price estimate. `src/openai.ts` calls the OpenAI Responses API with `store:false`; `src/report.ts` writes raw turn records, aggregate metrics, and a blinded review sheet. Each arm carries its own prior user/assistant turns. Ignored `runs/` output is local evidence, not an account, memory service, or authoritative meal state.
 
-**VERIFIED:** Tests exercise arm separation, corpus coverage, adapter request/usage parsing, secret-safe error handling, incomplete-run reporting, and blind context separation. A live model comparison and human scoring are **NOT VERIFIED** in this architecture installation. The prior preflight found no configured key; recheck before describing current credential status.
+**VERIFIED:** Tests exercise arm separation, corpus coverage, adapter request/usage parsing, secret-safe error handling, incomplete-run reporting, and blind context separation. The controlled A/B/C comparison has been run live and retained privately in ignored `runs/`; owner blind scoring is pending. The local key has been configured without entering Git history.
 
-**VERIFIED ABSENT:** There is no React application, Cloudflare Worker, D1/R2/Queue binding, database migration, account/authentication system, image upload, realtime voice, shared transcript, persistent customer profile, meal/cooking state, staging deployment, production deployment, or notification transport. None may be claimed from the CLI prototype.
+**VERIFIED ABSENT FROM THE PRODUCT:** There is no React application, R2/Queue binding, account system, image upload, realtime voice, persistent customer profile, meal/cooking state, or notification transport. The Live Lab Worker adds only private text sessions and a conversation revision; these are evaluation records, not evidence of the full product architecture.
 
 ## Authority register
 
@@ -32,7 +32,8 @@ This document describes what exists and marks future product boundaries separate
 | Identity and parent profile | NOT IMPLEMENTED | Future product decision | Procure profile integration boundary is planned, not currently connected. |
 | Meal/progress/forecast authority | NOT IMPLEMENTED | Future Snap n Dish backend | Must be server-owned and independently versioned when authorized. |
 | Cross-device and three modalities | NOT IMPLEMENTED | Future account/conversation APIs and clients | Snap It/Write It/Talk It must converge; no current client demonstrates this. |
-| Release environments | NOT IMPLEMENTED | Future Snap n Dish configuration | No staging/production resource IDs or Wrangler configuration exist here. |
+| Stage 1A Live Lab | VERIFIED local code and tests; remote release separately verified | `live-lab/`, `wrangler.*.jsonc` | Arm C streaming text, private access, D1 conversation and telemetry, no product account or meal state. |
+| Release environments | CONFIGURED for Stage 1A only | `wrangler.staging.jsonc`, `wrangler.live.jsonc` | Separate Snap n Dish resources; actual deployments and custom domain must be verified. |
 
 ## Current data and execution flow
 
@@ -60,14 +61,14 @@ The model can suggest a plan or recovery. The backend must conditionally accept 
 
 ## Release and environment status
 
-The repository has a small verification-only GitHub Actions workflow. A GitHub commit/push is a source-control action and does not deploy a Worker. **No Snap n Dish Cloudflare environment exists in this repository.** Staging resources, secrets, migrations, verification commands, rollback runbook, and production target require separate authorized implementation and validation. Do not substitute Snap n Done's checked-in Wrangler IDs, domains, queues, models, or release scripts.
+The repository has a verification-only GitHub Actions workflow. A GitHub commit/push does not deploy a Worker. Stage 1A Live Lab staging and live configuration, initial migration, and release runbook are in this repository; actual Cloudflare state must be checked after each deployment. Do not substitute Snap n Done's resource IDs, domains, queues, models, or release scripts. The live hostname is a private test surface, not a Stage 1B or general product release.
 
 ## Open decisions and known limits
 
-- **NOT VERIFIED:** Whether the selected foundation model and Snap instructions preserve the inspired culinary experience. Stage 1A live outputs and human comparison are pending.
+- **NOT VERIFIED:** Whether the selected foundation model and Snap instructions preserve the inspired culinary experience to the owner's standard. Live A/B/C outputs exist; blind owner judgment is pending.
 - **NOT VERIFIED:** Owner reference conversations, blinded human ratings, actual cooking validation, acceptable quality threshold, and full-session economics/latency threshold.
 - **NOT DECIDED:** Identity provider, Procure parent-profile consent and data-sharing contract, sensitive-context retention/deletion executor, and vendor data controls for production.
-- **NOT DECIDED:** Concrete Cloudflare resource configuration, staging URL, production rollout/rollback mechanism, realtime voice provider and transcript reconciliation, and cross-device synchronization contract.
+- **NOT DECIDED:** Broader production rollout/rollback mechanism, realtime voice provider and transcript reconciliation, and cross-device synchronization contract. Stage 1A Live Lab resources and rollback are specific to this controlled test.
 - **NOT DECIDED:** Notification channels and permission model; they are not Stage 1A work.
 
-The Stage 1A CLI intentionally lacks product-owned durable state. That is an experimental scope limit, not evidence that the final product can work without it. The owner approved this governance conversion and resumed Stage 1A (`SNDISH-010`); the live comparison remains unverified until it runs. Stage 1B, staging, production development, and deployment are not authorized.
+The Stage 1A CLI intentionally lacks product-owned durable state. The Live Lab adds only session and transcript authority for controlled testing. Neither demonstrates the final meal, cooking, memory, voice, photo, or cross-device system. Stage 1B still requires a separate owner decision after blind review.

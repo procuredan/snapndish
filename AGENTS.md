@@ -6,7 +6,7 @@ Before material work, read [`SNAP_GLOBAL_RULES.md`](SNAP_GLOBAL_RULES.md), [`SNA
 
 ## Current authorization boundary
 
-The repository currently contains a private Stage 1A culinary comparison prototype. The owner approved the governance conversion and explicitly resumed Stage 1A in `SNDISH-010`. Run the authorized live A/B/C comparison when the private API key is available, then stop and report its evidence and diagnosis. Do not start Stage 1B, configure Cloudflare, or begin production implementation. Preserve the prototype and its synthetic corpus.
+The owner has authorized a private, instrumented Stage 1A Live Lab at `app.snapndish.com`, with staging first and the specified pre-deploy report. Preserve the controlled A/B/C evaluation and its private results. This authorization covers only the Live Lab; it does not approve Stage 1B, a public beta, or the broader production application. Future material deployments still require their own owner authorization.
 
 ## Snap n Dish build principles
 

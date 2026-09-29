@@ -1,0 +1,35 @@
+{
+  "name": "snapndish-stage1a-staging",
+  "main": "live-lab/worker.mjs",
+  "compatibility_date": "2026-06-24",
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": {
+    "enabled": false
+  },
+  "triggers": {
+    "crons": [
+      "0 8 * * *"
+    ]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "snapndish-stage1a-staging",
+      "database_id": "d8c55ee9-832b-4a6c-86db-9f39927c5c78",
+      "migrations_dir": "live-lab/migrations"
+    }
+  ],
+  "secrets": {
+    "required": [
+      "OPENAI_API_KEY",
+      "LAB_ACCESS_CODE",
+      "COOKIE_SIGNING_KEY"
+    ]
+  },
+  "vars": {
+    "MODEL": "gpt-6-astra",
+    "REASONING_EFFORT": "medium",
+    "ARM": "C"
+  }
+}

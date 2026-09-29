@@ -1,0 +1,42 @@
+const STYLE = `<style nonce="__NONCE__">
+  :root{font-family:system-ui,-apple-system,sans-serif;color:#1f2b24;background:#f6f7f3}*{box-sizing:border-box}
+  body{margin:0}header{background:#fff;border-bottom:1px solid #d8ded7;padding:14px max(18px,calc((100vw - 900px)/2));display:flex;justify-content:space-between;align-items:center}
+  h1{font-size:1.25rem;margin:0}a{color:#235b42}main{max-width:900px;margin:0 auto;padding:16px}button{border:0;border-radius:8px;background:#256747;color:white;padding:10px 16px;cursor:pointer;font:inherit}
+  button:disabled{opacity:.5;cursor:default}textarea,input{font:inherit;border:1px solid #adbdb1;border-radius:8px;padding:10px;width:100%;background:white}
+  #messages{min-height:55vh;display:flex;flex-direction:column;gap:12px;padding:14px 0}.msg{white-space:pre-wrap;line-height:1.5;padding:14px 16px;border-radius:12px;max-width:86%}.user{align-self:flex-end;background:#dceee2}.snap{align-self:flex-start;background:white;border:1px solid #d8ded7}
+  #chat{display:flex;gap:8px;align-items:flex-end;position:sticky;bottom:0;background:#f6f7f3;padding:8px 0 16px}#chat textarea{min-height:52px;max-height:150px;resize:vertical}#status{font-size:.85rem;color:#56665c;min-height:1.4em}
+  details{background:#fff;border:1px solid #d8ded7;border-radius:10px;padding:10px;margin-bottom:8px}summary{cursor:pointer}#context{min-height:70px;margin:8px 0}
+  #review-list button{display:block;margin:8px 0;background:#e7eee8;color:#1f2b24;text-align:left;width:100%}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:white;border:1px solid #d8ded7;border-radius:10px;padding:14px;line-height:1.45}
+</style>`;
+
+const LOGIN = String.raw`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Snap n Dish Live Lab</title>__STYLE__</head>
+<body><header><h1>Snap n Dish · private Live Lab</h1></header><main><h2>Owner sign in</h2><p>This controlled Stage 1A test uses a private access code.</p><form id="login"><input id="code" type="password" autocomplete="off" aria-label="Access code" required><p><button>Enter Live Lab</button></p></form><p id="status" role="status"></p></main>
+<script nonce="__NONCE__">document.getElementById('login').addEventListener('submit',async function(e){e.preventDefault();const s=document.getElementById('status');s.textContent='Checking…';const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:document.getElementById('code').value})});if(r.ok)location.href='/';else s.textContent='Access code not accepted.'});</script></body></html>`;
+
+const CHAT = String.raw`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Snap n Dish Live Lab</title>__STYLE__</head>
+<body><header><h1>Snap n Dish</h1><nav><a href="/review">Review sessions</a></nav></header><main><details><summary>Start a new conversation or add context</summary><label for="context">What should Snap know about your kitchen, tastes, or household? Optional and editable only by starting a new session.</label><textarea id="context" maxlength="2000" placeholder="For example: two people, a grill and skillet, enjoy bold flavors..."></textarea><button id="new">New conversation</button></details><div id="messages" aria-live="polite"></div><p id="status" role="status"></p><form id="chat"><textarea id="input" maxlength="4000" placeholder="What are we making?" aria-label="Message to Snap" required></textarea><button id="send">Send</button></form></main>
+<script nonce="__NONCE__">
+let session=null;const messages=document.getElementById('messages'),status=document.getElementById('status'),input=document.getElementById('input'),send=document.getElementById('send');
+function bubble(role,text){const e=document.createElement('div');e.className='msg '+role;e.textContent=text;messages.appendChild(e);e.scrollIntoView({block:'end'});return e}
+function render(){messages.replaceChildren();if(!session)return;for(const t of session.turns)bubble(t.role==='user'?'user':'snap',t.text)}
+async function load(id){const r=await fetch('/api/sessions/'+encodeURIComponent(id));if(!r.ok){localStorage.removeItem('sndlab-session');return}session=await r.json();localStorage.setItem('sndlab-session',id);render();status.textContent='Private test conversation · revision '+session.revision}
+async function create(){const r=await fetch('/api/sessions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({context:document.getElementById('context').value})});if(!r.ok){status.textContent='Could not create conversation.';return}const x=await r.json();await load(x.id);document.querySelector('details').open=false;input.focus()}
+document.getElementById('new').onclick=create;
+document.getElementById('chat').addEventListener('submit',async function(e){e.preventDefault();if(!session){await create();if(!session)return}const text=input.value.trim();if(!text)return;input.value='';send.disabled=true;status.textContent='Snap is thinking…';
+try{const r=await fetch('/api/sessions/'+encodeURIComponent(session.id)+'/turns',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,turnId:crypto.randomUUID(),expectedRevision:session.revision})});if(r.status===409){status.textContent='This conversation changed elsewhere. Refreshing…';await load(session.id);return}if(!r.ok||!r.body){status.textContent='Could not send. Please try again.';input.value=text;return}
+const reader=r.body.getReader(),decoder=new TextDecoder();let buf='',answer=null,accepted=false;while(true){const x=await reader.read();if(x.done)break;buf+=decoder.decode(x.value,{stream:true});buf=buf.replace(/\r\n/g,'\n');let i;while((i=buf.indexOf('\n\n'))>=0){const frame=buf.slice(0,i);buf=buf.slice(i+2);const line=frame.split('\n').find(v=>v.startsWith('data: '));if(!line)continue;const v=JSON.parse(line.slice(6));if(v.type==='accepted'){accepted=true;session.revision=v.revision;bubble('user',text);answer=bubble('snap','');status.textContent='Snap is responding…'}else if(v.type==='delta'&&answer){answer.textContent+=v.text;answer.scrollIntoView({block:'end'})}else if(v.type==='complete'){status.textContent='Ready'}else if(v.type==='stale'){status.textContent='A newer message superseded this reply. Refreshing…';await load(session.id)}else if(v.type==='error'){status.textContent='Snap could not finish. Your message is saved; try again.'}}}
+if(accepted)await load(session.id)
+}catch{status.textContent='Connection interrupted. Refresh the conversation to check what was saved.'}finally{send.disabled=false}});
+const saved=localStorage.getItem('sndlab-session');if(saved)load(saved);else status.textContent='Start by telling Snap what you want to make.';
+</script></body></html>`;
+
+const REVIEW = String.raw`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Snap n Dish review</title>__STYLE__</head>
+<body><header><h1>Live Lab session review</h1><nav><a href="/">Back to Snap</a></nav></header><main><p>Chronological private test records. Conversation text and accepted state events are shown separately.</p><div id="review-list"></div><h2 id="title">Select a session</h2><pre id="timeline"></pre></main>
+<script nonce="__NONCE__">const list=document.getElementById('review-list'),timeline=document.getElementById('timeline'),title=document.getElementById('title');
+async function show(id){const r=await fetch('/api/review/sessions/'+encodeURIComponent(id));if(!r.ok){timeline.textContent='Unable to load session';return}const x=await r.json();title.textContent='Session '+id+' · revision '+x.session.revision;timeline.textContent=x.timeline.map(v=>v.at+'  '+v.kind+'  revision '+v.revision+'\n'+(v.text||v.details||'')).join('\n\n')}
+fetch('/api/review/sessions').then(r=>r.json()).then(x=>{for(const s of x.sessions){const b=document.createElement('button');b.textContent=s.created_at+' · '+s.id+' · '+s.turn_count+' turns · $'+Number(s.estimated_usd||0).toFixed(3);b.onclick=()=>show(s.id);list.appendChild(b)}}).catch(()=>list.textContent='Unable to load sessions');</script></body></html>`;
+
+export function page(kind, nonce) {
+  const source = kind === 'login' ? LOGIN : kind === 'review' ? REVIEW : CHAT;
+  return source.replace('__STYLE__', STYLE).replaceAll('__NONCE__', nonce);
+}
