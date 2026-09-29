@@ -1,6 +1,6 @@
 # Snap n Dish — current architecture and authority register
 
-**Reconciled:** 2026-09-29. **Status:** Stage 1A controlled evaluation and private Live Lab implementation; deployment must be verified separately.
+**Reconciled:** 2026-09-29. **Status:** Stage 1A controlled evaluation and private Live Lab deployed at `app.snapndish.com`; owner culinary and signed-in browser reviews remain open.
 **Governance:** [SNAP_GLOBAL_RULES.md](SNAP_GLOBAL_RULES.md). **Decisions:** [SNAP_DECISION_LOG.md](SNAP_DECISION_LOG.md).
 
 This document describes what exists and marks future product boundaries separately. The owner has authorized the private Stage 1A Live Lab at `app.snapndish.com`; that authorization does not include Stage 1B or a broader production build. Code and observed runtime remain implementation evidence; an old plan is not proof of current behavior.
@@ -61,7 +61,7 @@ The model can suggest a plan or recovery. The backend must conditionally accept 
 
 ## Release and environment status
 
-The repository has a verification-only GitHub Actions workflow. A GitHub commit/push does not deploy a Worker. Stage 1A Live Lab staging and live configuration, initial migration, and release runbook are in this repository; actual Cloudflare state must be checked after each deployment. Do not substitute Snap n Done's resource IDs, domains, queues, models, or release scripts. The live hostname is a private test surface, not a Stage 1B or general product release.
+The repository has a verification-only GitHub Actions workflow. A GitHub commit/push does not deploy a Worker. Stage 1A Live Lab staging and live configuration, initial migration, and release runbook are in this repository. The initial migration was applied to two isolated Snap n Dish D1 databases. The streaming Worker was deployed first to staging and verified with a synthetic real-model turn, then deployed to `app.snapndish.com` and verified through HTTPS API calls, telemetry readback, and the rendered private sign-in page. The signed-in browser conversation journey is pending owner sign-in; a local signed-in browser journey and the live API stream were separately tested. Current live Worker version: `1aa1d345-03e7-454a-b26a-2aa42c7ef609`; closed rollback version: `adc01ca3-0380-4d73-b131-c05faef8b15a`. The live hostname is a private test surface, not Stage 1B or a general product release. See the private deployment evidence in ignored `runs/` and [release runbook](live-lab/RELEASE.md).
 
 ## Open decisions and known limits
 
