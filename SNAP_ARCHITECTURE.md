@@ -15,6 +15,8 @@ This document describes what exists and marks future product boundaries separate
 
 **VERIFIED:** Tests exercise arm separation, corpus coverage, adapter request/usage parsing, secret-safe error handling, incomplete-run reporting, and blind context separation. The controlled A/B/C comparison has been run live and retained privately in ignored `runs/`; owner blind scoring is pending. The local key has been configured without entering Git history.
 
+**VERIFIED:** A separate offline `stage1a-snap-v2` behavior candidate and 24-case focused comparison are in `src/behavior-v2-eval.ts` and `evaluation/behavior-v2-cases.json`. The 75-turn Foundation A / deployed C v1 / candidate C v2 run completed locally with no recorded errors or retries; raw outputs, blind owner sheet, stream deltas, estimated cost and technical summary remain in ignored `runs/stage1a-v2-2026-09-29/`. The v1 function and Live Lab Worker were not changed. Owner blind scoring is pending. Browser-rendered decision-useful timing is **NOT VERIFIED**: the browser automation policy rejected the local replay file. Manually labeled provider-stream prefixes are separately recorded as non-rendered evidence.
+
 **VERIFIED ABSENT FROM THE PRODUCT:** There is no React application, R2/Queue binding, account system, image upload, realtime voice, persistent customer profile, meal/cooking state, or notification transport. The Live Lab Worker adds only private text sessions and a conversation revision; these are evaluation records, not evidence of the full product architecture.
 
 ## Authority register
@@ -25,9 +27,9 @@ This document describes what exists and marks future product boundaries separate
 | Product/architecture decisions | VERIFIED document | Append-only `SNAP_DECISION_LOG.md` | New decisions append; existing entries are not rewritten. |
 | Stage 1A scenarios and context | VERIFIED fixture | `evaluation/scenarios.json` | Synthetic test inputs, not real customer memory. |
 | A/B/C behavior | VERIFIED code | `src/config.ts` | Only experiment instructions and fixture context; not a deployed Snap policy. |
-| Model transport | VERIFIED code, live call NOT VERIFIED | `src/openai.ts` | Thin adapter; provider response is generated advice and usage evidence, not durable action authority. |
+| Model transport | VERIFIED code and live calls | `src/openai.ts`, `src/behavior-v2-eval.ts` | Thin experimental adapters; provider response is generated advice and usage evidence, not durable action authority. |
 | Per-arm conversation | VERIFIED code | `src/cli.ts` in-process arrays | Isolated experimental histories; process exit ends them. |
-| Run output and metrics | VERIFIED code, live metrics NOT VERIFIED | `src/cli.ts`, `src/report.ts`, ignored `runs/` | Partial results persist locally; estimated price is not a bill or a quality rating. |
+| Run output and metrics | VERIFIED code and local live metrics | `src/cli.ts`, `src/report.ts`, `src/behavior-v2-eval.ts`, ignored `runs/` | Partial results persist locally; estimated price is not a bill or a quality rating. |
 | Human culinary evaluation | Protocol exists; outcomes NOT VERIFIED | `evaluation/protocol.md` and generated blind sheet | Human reviewers must score; software cannot fabricate judgments. |
 | Identity and parent profile | NOT IMPLEMENTED | Future product decision | Procure profile integration boundary is planned, not currently connected. |
 | Meal/progress/forecast authority | NOT IMPLEMENTED | Future Snap n Dish backend | Must be server-owned and independently versioned when authorized. |
@@ -40,6 +42,8 @@ This document describes what exists and marks future product boundaries separate
 `evaluation/scenarios.json` → identical scripted user turns → three instruction/context variants with the same selected model → Responses API adapter → per-arm local conversation → incremental `results.json` → `summary.json`, blind review, key, separate context fixtures.
 
 The run records response/model IDs, full-response latency, provider token usage, estimated USD, text, versions, and errors. It does not record time to first spoken/visible response, actual invoice, human culinary scores, real cooking outcome, image or voice cost, or backend cost. Retries may incur unobserved cost when the provider does not return usage. A run is incomplete if any expected turn is missing. The local cost cap is an experimental guard, not a product budget.
+
+The focused v2 run additionally records streamed text deltas, first nonblank text and `firstUsefulProxyMs`. That proxy is the old 50-character/punctuation heuristic, not a semantic or browser-paint measurement. A separate ignored manual annotation marks when a streamed prefix first supported the next decision/action on representative cases. It cannot establish rendered latency. The candidate has no runtime authority until a later approved release.
 
 ## Approved product boundary, not current implementation
 

@@ -6,6 +6,10 @@
   "scripts": {
     "preflight": "node --env-file-if-exists=.env --experimental-strip-types src/cli.ts preflight",
     "compare": "node --env-file-if-exists=.env --experimental-strip-types src/cli.ts run",
+    "compare:v2": "node --env-file-if-exists=.env --experimental-strip-types src/behavior-v2-eval.ts run",
+    "preflight:v2": "node --env-file-if-exists=.env --experimental-strip-types src/behavior-v2-eval.ts preflight",
+    "review:v2:render": "node --experimental-strip-types src/behavior-v2-render.ts",
+    "review:v2:summary": "node --experimental-strip-types src/behavior-v2-summary.ts",
     "chat": "node --env-file-if-exists=.env --experimental-strip-types src/cli.ts chat --arm C",
     "test": "node --experimental-strip-types --test tests/*.test.ts tests/*.test.mjs"
   }

@@ -117,6 +117,15 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 - **Depends / reconsider:** Live testing and abuse/cost observation. Public model usage remains bounded by the existing daily and per-session limits; a future public product needs a separately approved abuse strategy.
 - **Supersedes:** `SNDISH-011` only for its access-code requirement on the chat entry. Its review protection and Stage 1A scope remain in force.
 
+### SNDISH-013 — Offline Stage 1A behavior v2 comparison
+
+- **Date / owner:** 2026-09-29; Snap n Dish product owner, via explicit Stage 1A behavior-experiment authorization.
+- **Decision:** Preserve Foundation A, `stage1a-snap-v1` and the deployed Live Lab. Add a separately versioned `stage1a-snap-v2` candidate guided by the next shared decision/action contract. Compare Foundation A, deployed C v1 and candidate C v2 anonymously on focused fixed and held-out cases, including empty-context discovery, selection, direct answers, recovery, rejection, context contrasts and real two-turn continuity. Report latency with the old first-useful heuristic labeled a proxy and gather decision-useful rendered evidence. Stop for PM review before any deployment.
+- **Reason:** The first owner Live Lab failure suggests that v1 may treat an incomplete ingredient statement as a committed dish. A controlled experiment can test that cause without narrowing culinary breadth or changing the production surface.
+- **Excluded alternative:** Stage 1B, v2 deployment, prompt rules tied to the pork example, fixed cuisine/recipe outputs, intent classifier, state machine, second model call, retrieval or fine-tuning.
+- **Depends / reconsider:** Measured API run, blind owner judgment, regression diagnosis and separate release authorization. The two-turn pork example is a behavioral reference, not a lexical answer key.
+- **Supersedes:** None.
+
 ## Open decisions — no authority may be invented
 
 1. Stage 1A quality result and owner benchmark/human review; the current prototype tests are not that decision.
