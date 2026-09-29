@@ -70,4 +70,4 @@ The repository has a small verification-only GitHub Actions workflow. A GitHub c
 - **NOT DECIDED:** Concrete Cloudflare resource configuration, staging URL, production rollout/rollback mechanism, realtime voice provider and transcript reconciliation, and cross-device synchronization contract.
 - **NOT DECIDED:** Notification channels and permission model; they are not Stage 1A work.
 
-The Stage 1A CLI intentionally lacks product-owned durable state. That is an experimental scope limit, not evidence that the final product can work without it. The Engineering GO allows Stage 1B only after a promising Stage 1A; the latest owner instruction pauses Stage 1A while governance is reviewed and does not authorize Stage 1B.
+The Stage 1A CLI intentionally lacks product-owned durable state. That is an experimental scope limit, not evidence that the final product can work without it. The owner approved this governance conversion and resumed Stage 1A (`SNDISH-010`); the live comparison remains unverified until it runs. Stage 1B, staging, production development, and deployment are not authorized.

@@ -6,7 +6,7 @@ Before material work, read [`SNAP_GLOBAL_RULES.md`](SNAP_GLOBAL_RULES.md), [`SNA
 
 ## Current authorization boundary
 
-The repository currently contains a private Stage 1A culinary comparison prototype. The owner has paused Stage 1A for review of this governance conversion. Do not resume live comparison, start Stage 1B, configure Cloudflare, or begin production implementation on the strength of this file. The prototype and its synthetic corpus must be preserved. A future instruction to resume Stage 1A does not automatically authorize Stage 1B.
+The repository currently contains a private Stage 1A culinary comparison prototype. The owner approved the governance conversion and explicitly resumed Stage 1A in `SNDISH-010`. Run the authorized live A/B/C comparison when the private API key is available, then stop and report its evidence and diagnosis. Do not start Stage 1B, configure Cloudflare, or begin production implementation. Preserve the prototype and its synthetic corpus.
 
 ## Snap n Dish build principles
 

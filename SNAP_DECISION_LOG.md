@@ -90,6 +90,15 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 - **Depends / reconsider:** All architecture and release work; any cross-product integration needs separate explicit authorization.
 - **Supersedes:** None.
 
+### SNDISH-010 — Governance approved; Stage 1A resumes alone
+
+- **Date / owner:** 2026-09-28; Snap n Dish product owner, via explicit approval and resumption instruction.
+- **Decision:** The four Snap n Dish governing documents are canonical. Resume only the existing Stage 1A culinary comparison once the private `OPENAI_API_KEY` is configured. Run A/B/C live, capture outputs and measurements, then stop and report evidence and diagnosis to PM. Do not begin Stage 1B, production development, staging deployment, or production deployment without the next explicit authorization.
+- **Reason:** Governance conversion was reviewed and approved; the culinary premise still requires measured live evidence.
+- **Excluded alternative:** Treating governance approval, passing prototype tests, or the Engineering GO's conditional Stage 1B language as a completed Stage 1A gate or broader build authorization.
+- **Depends / reconsider:** Stage 1A run and human review; reconsider after measured results and a new owner instruction.
+- **Supersedes:** `SNDISH-007` only for its temporary governance-review pause. Its Stage 1A proof gate and Stage 1B restriction remain in force.
+
 ## Open decisions — no authority may be invented
 
 1. Stage 1A quality result and owner benchmark/human review; the current prototype tests are not that decision.
