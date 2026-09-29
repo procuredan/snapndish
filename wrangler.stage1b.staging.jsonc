@@ -1,0 +1,31 @@
+{
+  "name": "snapndish-stage1b-staging",
+  "main": "live-lab/worker.mjs",
+  "compatibility_date": "2026-06-24",
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": { "enabled": false },
+  "triggers": { "crons": ["* * * * *"] },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "snapndish-stage1b-staging",
+    "database_id": "e3181d3c-3def-41dd-b08e-0b04ffcd2663",
+    "migrations_dir": "stage1b/migrations"
+  }],
+  "r2_buckets": [{ "binding": "IMAGES", "bucket_name": "snapndish-stage1b-staging-images" }],
+  "secrets": { "required": [
+    "OPENAI_API_KEY",
+    "LAB_ACCESS_CODE",
+    "COOKIE_SIGNING_KEY",
+    "VAPID_PRIVATE_JWK",
+    "VAPID_PUBLIC_KEY",
+    "VAPID_SUBJECT"
+  ] },
+  "vars": {
+    "STAGE1B_ENABLED": "true",
+    "MODEL": "gpt-6-astra",
+    "REASONING_EFFORT": "medium",
+    "BEHAVIOR_VERSION": "stage1a-snap-v2",
+    "ARM": "C"
+  }
+}

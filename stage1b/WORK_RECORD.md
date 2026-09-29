@@ -28,6 +28,14 @@ Keep the verified Stage 1A v2 live Worker version `8b68fce3-7845-412e-9c1a-80e78
 
 The [Stage 1B release runbook](RELEASE.md) requires an owner-only Cloudflare Access gate on the isolated staging Worker before live Realtime voice. Direct browser-to-provider WebRTC media can continue after SDP exchange, so the text call counter does not bound voice spending. This is a staging access and spend-control gate, not a product login design. The closed Worker is the immediate Stage 1B rollback target.
 
+## Isolated Cloudflare staging preparation, 2026-09-29
+
+**VERIFIED:** Wrangler authenticated to the intended `Dan@procuremedia.com's Account`. The owner approved `workers:write` and `d1:write`. A new D1 database `snapndish-stage1b-staging` (`e3181d3c-3def-41dd-b08e-0b04ffcd2663`) and private R2 bucket `snapndish-stage1b-staging-images` were created after confirming those names were unused. No Stage 1A database, bucket, Worker or route was modified or reused. The staging config binds only these new resources.
+
+**VERIFIED:** The new D1 database initially contained only Cloudflare system tables. The seven unmodified `stage1b/migrations/` files were applied remotely; the ledger lists `0001` through `0007`, Wrangler reports no pending migrations, and the expected session, turn, image, voice, pair and reminder tables exist. The post-migration D1 Time Travel bookmark is `00000000-00000019-000050f5-11148b1a8e8a0a85d8bf30a293efa75f`. This is a recovery reference for the isolated staging database, not a code rollback.
+
+**NOT VERIFIED:** No Stage 1B Worker or Access policy has been deployed. Read-only Worker deployment queries return `No access` with the current OAuth token because the separate `workers_scripts:write` permission is absent. Automatic approval review rejected opening a refreshed consent page that would add this account-wide permission. Explicit owner approval for that expanded scope was requested; the uncompleted second login was stopped. Keep the Stage 1B Worker closed until the scoped authorization and Access gate are verified.
+
 ## Evidence convention
 
 For each capability, record what was built, what was deferred, relationship to the culinary core, measured latency/cost, quality, reliability and known limits. Mark VERIFIED, INFERRED and NOT VERIFIED explicitly. Stop for PM review after all five proofs; do not begin commercial alpha.
