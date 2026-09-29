@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { Script } from 'node:vm';
 import worker from '../live-lab/worker.mjs';
+import closedStage1b from '../stage1b/closed.mjs';
 import { page } from '../live-lab/ui.mjs';
 
 class TestDB {
@@ -74,6 +75,14 @@ function providerStream(text) {
     c.close();
   } }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
 }
+
+test('Stage 1B closed rollback exposes no application routes', async () => {
+  for (const path of ['/', '/health', '/review', '/api/sessions']) {
+    const response = await closedStage1b.fetch(req(path));
+    assert.equal(response.status, 503);
+    assert.match(await response.text(), /Stage 1B staging is paused/);
+  }
+});
 
 test('public chat, isolated visitor sessions, and protected owner review', async () => {
   const e = env();
