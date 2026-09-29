@@ -6,7 +6,7 @@ Before material work, read [`SNAP_GLOBAL_RULES.md`](SNAP_GLOBAL_RULES.md), [`SNA
 
 ## Current authorization boundary
 
-The owner has authorized a private, instrumented Stage 1A Live Lab at `app.snapndish.com`, with staging first and the specified pre-deploy report. Preserve the controlled A/B/C evaluation and its private results. This authorization covers only the Live Lab; it does not approve Stage 1B, a public beta, or the broader production application. Future material deployments still require their own owner authorization.
+The owner has authorized the instrumented Stage 1A Live Lab at `app.snapndish.com` and direct chat entry without sign-in. Keep owner review and telemetry access protected. Preserve the controlled A/B/C evaluation and its private results. This authorization covers only the Live Lab; it does not approve Stage 1B, a public beta, or the broader production application. Future material deployments still require their own owner authorization.
 
 ## Snap n Dish build principles
 

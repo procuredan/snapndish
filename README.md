@@ -28,6 +28,6 @@ See [evaluation protocol](evaluation/protocol.md). Stage 1B and product build ar
 
 ## Private Live Lab
 
-`live-lab/` is a small text-only Worker with streaming Arm C responses, a private owner access code, D1 session and turn records, and a chronological `/review` page. It intentionally has no photo, voice, account, meal orchestration, or Procure profile integration. The original A/B/C corpus and ignored `runs/` results remain unchanged.
+`live-lab/` is a small text-only Worker with streaming Arm C responses. The chat opens directly at `app.snapndish.com`; each browser can access only its own session. The chronological `/review` page and telemetry APIs still require the private owner code. It intentionally has no photo, voice, account, meal orchestration, or Procure profile integration. The original A/B/C corpus and ignored `runs/` results remain unchanged.
 
 The staging and `app.snapndish.com` Wrangler files bind separate Snap n Dish D1 databases. See [release runbook](live-lab/RELEASE.md) for exact gates, telemetry, retention, verification, and rollback. Never put `OPENAI_API_KEY`, the Lab access code, or signing keys in GitHub or terminal output. CI never deploys.

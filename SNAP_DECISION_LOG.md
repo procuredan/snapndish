@@ -108,6 +108,15 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 - **Depends / reconsider:** Blind owner review and Live Lab evidence; later architecture and deployment require separate authorization. The proposed Live Lab retention is 30 days, subject to documented D1 Time Travel availability beyond application deletion.
 - **Supersedes:** `SNDISH-010` only for its prior prohibition on Stage 1A staging/live deployment; its Stage 1B prohibition remains in force.
 
+### SNDISH-012 — Direct Stage 1A chat entry with protected review
+
+- **Date / owner:** 2026-09-29; Snap n Dish product owner, via explicit frictionless Live Lab instruction.
+- **Decision:** `app.snapndish.com` opens directly into the Stage 1A chat without an access-code or sign-in step. Keep `/review` and review/telemetry APIs behind the existing owner code, and do not link to review from the consumer page. Give each anonymous browser access only to its own conversation through a signed session cookie. Preserve the Stage 1A model behavior, telemetry, retention, cost cap, evaluation corpus, and staging-first release discipline.
+- **Reason:** Test the actual frictionless consumer entry while preserving private owner review and visitor conversation privacy.
+- **Excluded alternative:** Public review data, a replacement account system, Stage 1B, or a broader production application.
+- **Depends / reconsider:** Live testing and abuse/cost observation. Public model usage remains bounded by the existing daily and per-session limits; a future public product needs a separately approved abuse strategy.
+- **Supersedes:** `SNDISH-011` only for its access-code requirement on the chat entry. Its review protection and Stage 1A scope remain in force.
+
 ## Open decisions — no authority may be invented
 
 1. Stage 1A quality result and owner benchmark/human review; the current prototype tests are not that decision.

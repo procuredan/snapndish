@@ -2,7 +2,8 @@ import { instructionsFor, estimateUsd, BEHAVIOR_VERSION, CONTEXT_VERSION, SCENAR
 import { page } from './ui.mjs';
 
 const DAY = 86_400_000;
-const COOKIE = '__Host-sndlab';
+const REVIEW_COOKIE = '__Host-sndlab';
+const SESSION_COOKIE = '__Host-sndlab-session';
 const encoder = new TextEncoder();
 const BASE_HEADERS = {
   'Cache-Control': 'no-store',
@@ -32,16 +33,30 @@ function equal(a, b) {
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
 }
-async function makeCookie(secret) {
+function cookieValue(request, name) {
+  const raw = request.headers.get('Cookie') ?? '';
+  return raw.split(';').map(x => x.trim()).find(x => x.startsWith(name + '='))?.slice(name.length + 1);
+}
+async function makeReviewCookie(secret) {
   const payload = `${Date.now() + 12 * 60 * 60 * 1000}.${randomToken()}`;
   return `${payload}.${await mac(secret, payload)}`;
 }
-async function authorized(request, secret) {
-  const raw = request.headers.get('Cookie') ?? '';
-  const token = raw.split(';').map(x => x.trim()).find(x => x.startsWith(COOKIE + '='))?.slice(COOKIE.length + 1);
+async function authorizedReview(request, secret) {
+  const token = cookieValue(request, REVIEW_COOKIE);
   if (!token) return false;
   const pieces = token.split('.');
   if (pieces.length !== 3 || !Number.isFinite(Number(pieces[0])) || Number(pieces[0]) < Date.now()) return false;
+  return equal(pieces[2], await mac(secret, `${pieces[0]}.${pieces[1]}`));
+}
+async function makeSessionCookie(secret, id, expiresAt) {
+  const payload = `${id}.${Date.parse(expiresAt)}`;
+  return `${payload}.${await mac(secret, payload)}`;
+}
+async function authorizedSession(request, secret, id) {
+  const token = cookieValue(request, SESSION_COOKIE);
+  if (!token) return false;
+  const pieces = token.split('.');
+  if (pieces.length !== 3 || pieces[0] !== id || !Number.isFinite(Number(pieces[1])) || Number(pieces[1]) < Date.now()) return false;
   return equal(pieces[2], await mac(secret, `${pieces[0]}.${pieces[1]}`));
 }
 function html(kind) {
@@ -82,7 +97,7 @@ async function createSession(request, env) {
   await env.DB.prepare('INSERT INTO sessions (id,created_at,updated_at,revision,customer_context,expires_at) VALUES (?,?,?,?,?,?)')
     .bind(id, at, at, 0, context, expires).run();
   await event(env.DB, id, null, 0, 'session_created', { context_supplied: Boolean(context) });
-  return json({ id, revision: 0 }, 201);
+  return json({ id, revision: 0 }, 201, { 'Set-Cookie': `${SESSION_COOKIE}=${await makeSessionCookie(env.COOKIE_SIGNING_KEY, id, expires)}; Path=/; Max-Age=2592000; HttpOnly; Secure; SameSite=Strict` });
 }
 
 async function showSession(env, id) {
@@ -299,26 +314,30 @@ export default {
       behavior_version: BEHAVIOR_VERSION, context_version: CONTEXT_VERSION, scenario_version: SCENARIO_VERSION });
     if (!env.DB || !env.LAB_ACCESS_CODE || !env.COOKIE_SIGNING_KEY) return json({ error: 'LAB_NOT_CONFIGURED' }, 503);
     if (request.method !== 'GET' && !sameOrigin(request)) return json({ error: 'ORIGIN_REQUIRED' }, 403);
-    if (url.pathname === '/api/login' && request.method === 'POST') {
+    if (url.pathname === '/' && request.method === 'GET') return html('chat');
+    if (url.pathname === '/api/review/login' && request.method === 'POST') {
       const input = await bodyJson(request);
       if (!equal(String(input.code ?? ''), env.LAB_ACCESS_CODE)) return json({ error: 'UNAUTHORIZED' }, 401);
-      return json({ ok: true }, 200, { 'Set-Cookie': `${COOKIE}=${await makeCookie(env.COOKIE_SIGNING_KEY)}; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=Strict` });
+      return json({ ok: true }, 200, { 'Set-Cookie': `${REVIEW_COOKIE}=${await makeReviewCookie(env.COOKIE_SIGNING_KEY)}; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=Strict` });
     }
-    if (!await authorized(request, env.COOKIE_SIGNING_KEY))
-      return url.pathname.startsWith('/api/') ? json({ error: 'UNAUTHORIZED' }, 401) : html('login');
-    if (url.pathname === '/api/logout' && request.method === 'POST')
-      return json({ ok: true }, 200, { 'Set-Cookie': `${COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict` });
-    if (url.pathname === '/' && request.method === 'GET') return html('chat');
-    if (url.pathname === '/review' && request.method === 'GET') return html('review');
-    if (url.pathname === '/api/sessions' && request.method === 'GET') return listSessions(env);
+    if (url.pathname === '/review' && request.method === 'GET')
+      return html(await authorizedReview(request, env.COOKIE_SIGNING_KEY) ? 'review' : 'login');
+    if (url.pathname === '/api/review/logout' && request.method === 'POST')
+      return json({ ok: true }, 200, { 'Set-Cookie': `${REVIEW_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict` });
+    if (url.pathname.startsWith('/api/review/')) {
+      if (!await authorizedReview(request, env.COOKIE_SIGNING_KEY)) return json({ error: 'UNAUTHORIZED' }, 401);
+      if (url.pathname === '/api/review/sessions' && request.method === 'GET') return listSessions(env);
+      const review = url.pathname.match(/^\/api\/review\/sessions\/([0-9a-f-]{36})$/i);
+      if (review && request.method === 'GET') return reviewSession(env, review[1]);
+      return json({ error: 'NOT_FOUND' }, 404);
+    }
     if (url.pathname === '/api/sessions' && request.method === 'POST') return createSession(request, env);
-    if (url.pathname === '/api/review/sessions' && request.method === 'GET') return listSessions(env);
-    const review = url.pathname.match(/^\/api\/review\/sessions\/([0-9a-f-]{36})$/i);
-    if (review && request.method === 'GET') return reviewSession(env, review[1]);
     const session = url.pathname.match(/^\/api\/sessions\/([0-9a-f-]{36})$/i);
-    if (session && request.method === 'GET') return showSession(env, session[1]);
+    if (session && request.method === 'GET')
+      return await authorizedSession(request, env.COOKIE_SIGNING_KEY, session[1]) ? showSession(env, session[1]) : json({ error: 'NOT_FOUND' }, 404);
     const turn = url.pathname.match(/^\/api\/sessions\/([0-9a-f-]{36})\/turns$/i);
-    if (turn && request.method === 'POST') return streamTurn(request, env, ctx, turn[1]);
+    if (turn && request.method === 'POST')
+      return await authorizedSession(request, env.COOKIE_SIGNING_KEY, turn[1]) ? streamTurn(request, env, ctx, turn[1]) : json({ error: 'NOT_FOUND' }, 404);
     return json({ error: 'NOT_FOUND' }, 404);
   },
   async scheduled(_event, env) {

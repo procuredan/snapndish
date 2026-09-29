@@ -1,9 +1,9 @@
 # Snap n Dish — current architecture and authority register
 
-**Reconciled:** 2026-09-29. **Status:** Stage 1A controlled evaluation and private Live Lab deployed at `app.snapndish.com`; owner culinary and signed-in browser reviews remain open.
+**Reconciled:** 2026-09-29. **Status:** Stage 1A controlled evaluation and Live Lab deployed at `app.snapndish.com`; direct chat entry is implemented in source and requires staging/live release verification.
 **Governance:** [SNAP_GLOBAL_RULES.md](SNAP_GLOBAL_RULES.md). **Decisions:** [SNAP_DECISION_LOG.md](SNAP_DECISION_LOG.md).
 
-This document describes what exists and marks future product boundaries separately. The owner has authorized the private Stage 1A Live Lab at `app.snapndish.com`; that authorization does not include Stage 1B or a broader production build. Code and observed runtime remain implementation evidence; an old plan is not proof of current behavior.
+This document describes what exists and marks future product boundaries separately. The owner has authorized direct chat entry for the Stage 1A Live Lab at `app.snapndish.com` while retaining private owner review. That authorization does not include Stage 1B or a broader production build. Code and observed runtime remain implementation evidence; an old plan is not proof of current behavior.
 
 ## Evidence convention
 
@@ -32,7 +32,7 @@ This document describes what exists and marks future product boundaries separate
 | Identity and parent profile | NOT IMPLEMENTED | Future product decision | Procure profile integration boundary is planned, not currently connected. |
 | Meal/progress/forecast authority | NOT IMPLEMENTED | Future Snap n Dish backend | Must be server-owned and independently versioned when authorized. |
 | Cross-device and three modalities | NOT IMPLEMENTED | Future account/conversation APIs and clients | Snap It/Write It/Talk It must converge; no current client demonstrates this. |
-| Stage 1A Live Lab | VERIFIED local code and tests; remote release separately verified | `live-lab/`, `wrangler.*.jsonc` | Arm C streaming text, private access, D1 conversation and telemetry, no product account or meal state. |
+| Stage 1A Live Lab | VERIFIED local code and tests; new release pending | `live-lab/`, `wrangler.*.jsonc` | Arm C streaming text, direct visitor chat with signed session cookie, protected owner review, D1 conversation and telemetry, no product account or meal state. |
 | Release environments | CONFIGURED for Stage 1A only | `wrangler.staging.jsonc`, `wrangler.live.jsonc` | Separate Snap n Dish resources; actual deployments and custom domain must be verified. |
 
 ## Current data and execution flow
@@ -61,7 +61,7 @@ The model can suggest a plan or recovery. The backend must conditionally accept 
 
 ## Release and environment status
 
-The repository has a verification-only GitHub Actions workflow. A GitHub commit/push does not deploy a Worker. Stage 1A Live Lab staging and live configuration, initial migration, and release runbook are in this repository. The initial migration was applied to two isolated Snap n Dish D1 databases. The streaming Worker was deployed first to staging and verified with a synthetic real-model turn, then deployed to `app.snapndish.com` and verified through HTTPS API calls, telemetry readback, and the rendered private sign-in page. The signed-in browser conversation journey is pending owner sign-in; a local signed-in browser journey and the live API stream were separately tested. Current live Worker version: `1aa1d345-03e7-454a-b26a-2aa42c7ef609`; closed rollback version: `adc01ca3-0380-4d73-b131-c05faef8b15a`. The live hostname is a private test surface, not Stage 1B or a general product release. See the private deployment evidence in ignored `runs/` and [release runbook](live-lab/RELEASE.md).
+The repository has a verification-only GitHub Actions workflow. A GitHub commit/push does not deploy a Worker. Stage 1A Live Lab staging and live configuration, initial migration, and release runbook are in this repository. The initial migration was applied to two isolated Snap n Dish D1 databases. The first streaming Worker was verified in staging and then at `app.snapndish.com` through HTTPS API calls, telemetry readback, and its rendered sign-in page. The new direct-chat source change keeps `/review` and its APIs behind the owner code and scopes public conversation reads/writes to a signed browser session cookie; staging and live release verification for this change are pending. Previously verified live Worker version: `1aa1d345-03e7-454a-b26a-2aa42c7ef609`; closed rollback version: `adc01ca3-0380-4d73-b131-c05faef8b15a`. This hostname is a controlled Stage 1A test surface, not Stage 1B or a general product release. See the private deployment evidence in ignored `runs/` and [release runbook](live-lab/RELEASE.md).
 
 ## Open decisions and known limits
 

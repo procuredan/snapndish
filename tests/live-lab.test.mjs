@@ -46,10 +46,16 @@ function req(path, method = 'GET', body, cookie) {
   return new Request(origin + path, { method, headers: { ...(method !== 'GET' ? { Origin: origin, 'Content-Type': 'application/json' } : {}),
     ...(cookie ? { Cookie: cookie } : {}) }, body: body === undefined ? undefined : JSON.stringify(body) });
 }
-async function login(e) {
-  const r = await worker.fetch(req('/api/login', 'POST', { code: accessCode }), e, context());
+async function reviewLogin(e) {
+  const r = await worker.fetch(req('/api/review/login', 'POST', { code: accessCode }), e, context());
   assert.equal(r.status, 200);
   return r.headers.get('Set-Cookie').split(';')[0];
+}
+async function createVisitorSession(e, customerContext, ctx = context()) {
+  const r = await worker.fetch(req('/api/sessions', 'POST', { context: customerContext }), e, ctx);
+  assert.equal(r.status, 201);
+  assert.match(r.headers.get('Set-Cookie'), /__Host-sndlab-session=.*HttpOnly; Secure; SameSite=Strict/);
+  return { ...(await r.json()), cookie: r.headers.get('Set-Cookie').split(';')[0] };
 }
 function providerStream(text) {
   const frames = [
@@ -65,16 +71,31 @@ function providerStream(text) {
   } }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
 }
 
-test('private access, same-origin login, and protected review', async () => {
+test('public chat, isolated visitor sessions, and protected owner review', async () => {
   const e = env();
-  assert.equal((await worker.fetch(req('/api/sessions'), e, context())).status, 401);
+  const home = await worker.fetch(req('/'), e, context());
+  assert.equal(home.status, 200);
+  const html = await home.text();
+  assert.match(html, /What are we making\?/);
+  assert.doesNotMatch(html, /Review sessions|Owner sign in/);
+  assert.equal((await worker.fetch(req('/api/sessions'), e, context())).status, 404);
   assert.equal((await worker.fetch(req('/api/review/sessions'), e, context())).status, 401);
-  const wrongOrigin = new Request(origin + '/api/login', { method: 'POST', headers: { Origin: 'https://attacker.test' },
+  assert.equal((await worker.fetch(req('/api/review/sessions/' + crypto.randomUUID()), e, context())).status, 401);
+  assert.match(await (await worker.fetch(req('/review'), e, context())).text(), /Review access/);
+  const wrongOrigin = new Request(origin + '/api/review/login', { method: 'POST', headers: { Origin: 'https://attacker.test' },
     body: JSON.stringify({ code: accessCode }) });
   assert.equal((await worker.fetch(wrongOrigin, e, context())).status, 403);
-  const cookie = await login(e);
-  assert.equal((await worker.fetch(req('/review', 'GET', undefined, cookie), e, context())).status, 200);
-  assert.equal((await worker.fetch(req('/api/review/sessions', 'GET', undefined, cookie), e, context())).status, 200);
+  const first = await createVisitorSession(e, 'First visitor context');
+  const second = await createVisitorSession(e, 'Second visitor context');
+  assert.equal((await worker.fetch(req(`/api/sessions/${first.id}`), e, context())).status, 404);
+  assert.equal((await worker.fetch(req(`/api/sessions/${first.id}`, 'GET', undefined, second.cookie), e, context())).status, 404);
+  assert.equal((await worker.fetch(req(`/api/sessions/${first.id}`, 'GET', undefined, first.cookie), e, context())).status, 200);
+  assert.equal((await worker.fetch(req(`/api/sessions/${first.id}/turns`, 'POST',
+    { text: 'Dinner?', turnId: crypto.randomUUID(), expectedRevision: 0 }, second.cookie), e, context())).status, 404);
+  const reviewCookie = await reviewLogin(e);
+  assert.equal((await worker.fetch(req('/review', 'GET', undefined, reviewCookie), e, context())).status, 200);
+  assert.equal((await worker.fetch(req('/api/review/sessions', 'GET', undefined, reviewCookie), e, context())).status, 200);
+  assert.equal((await worker.fetch(req(`/api/review/sessions/${first.id}`, 'GET', undefined, reviewCookie), e, context())).status, 200);
 });
 
 test('all rendered pages contain parseable client scripts', () => {
@@ -87,10 +108,8 @@ test('all rendered pages contain parseable client scripts', () => {
 });
 
 test('streamed reply records model output separately from accepted conversation state', async () => {
-  const e = env(), cookie = await login(e), ctx = context();
-  const created = await worker.fetch(req('/api/sessions', 'POST', { context: 'Two people, skillet, loves surprising flavors.' }, cookie), e, ctx);
-  assert.equal(created.status, 201);
-  const { id } = await created.json();
+  const e = env(), ctx = context();
+  const { id, cookie } = await createVisitorSession(e, 'Two people, skillet, loves surprising flavors.', ctx);
   const original = globalThis.fetch;
   globalThis.fetch = async (_url, options) => {
     assert.equal(options.method, 'POST');
@@ -123,8 +142,8 @@ test('streamed reply records model output separately from accepted conversation 
 });
 
 test('newer revision rejects a late model result while retaining its audit record', async () => {
-  const e = env(), cookie = await login(e), ctx = context();
-  const { id } = await (await worker.fetch(req('/api/sessions', 'POST', { context: 'One skillet.' }, cookie), e, ctx)).json();
+  const e = env(), ctx = context();
+  const { id, cookie } = await createVisitorSession(e, 'One skillet.', ctx);
   let release;
   const gate = new Promise(resolve => { release = resolve; });
   const original = globalThis.fetch;
@@ -143,8 +162,8 @@ test('newer revision rejects a late model result while retaining its audit recor
 });
 
 test('scheduled retention removes expired sessions and dependent records', async () => {
-  const e = env(), cookie = await login(e);
-  const { id } = await (await worker.fetch(req('/api/sessions', 'POST', { context: '' }, cookie), e, context())).json();
+  const e = env();
+  const { id } = await createVisitorSession(e, '');
   e.DB.raw.prepare('UPDATE sessions SET expires_at=? WHERE id=?').run('2020-01-01T00:00:00.000Z', id);
   await worker.scheduled({}, e);
   assert.equal(e.DB.raw.prepare('SELECT COUNT(*) AS n FROM sessions').get().n, 0);
