@@ -39,7 +39,14 @@ For this v2 code-only release, reuse the existing isolated databases and applied
 
 ## Rollback and recovery
 
-For a v2 behavior regression, roll back to the verified prior v1 Worker version with the matching config and Worker name. For a code, security, or AI problem requiring a pause, close the affected Worker immediately with the recorded closed version ID:
+For a v2 behavior regression, roll back to the verified prior v1 Worker version. These IDs were read from the active deployment lists before the v2 release:
+
+```sh
+wrangler rollback cda4b362-0c8e-4f84-a049-ea8976a3df0b --config wrangler.live.jsonc --name snapndish-stage1a-live --message 'Restore Stage 1A v1' --yes
+wrangler rollback 0cbf9173-cac3-4e04-8951-97477f198044 --config wrangler.staging.jsonc --name snapndish-stage1a-staging --message 'Restore Stage 1A v1' --yes
+```
+
+Verify `/health` reports `stage1a-snap-v1`, the chat streams, and review remains protected. For a code, security, or AI problem requiring a pause, close the affected Worker immediately with the recorded closed version ID:
 
 ```sh
 wrangler rollback CLOSED_VERSION_ID --config wrangler.live.bootstrap.jsonc --name snapndish-stage1a-live --message 'Pause Stage 1A Live Lab' --yes
