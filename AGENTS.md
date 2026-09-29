@@ -6,7 +6,7 @@ Before material work, read [`SNAP_GLOBAL_RULES.md`](SNAP_GLOBAL_RULES.md), [`SNA
 
 ## Current authorization boundary
 
-The owner has authorized the instrumented Stage 1A Live Lab at `app.snapndish.com` and direct chat entry without sign-in. Keep owner review and telemetry access protected. Preserve the controlled A/B/C evaluation and its private results. This authorization covers only the Live Lab; it does not approve Stage 1B, a public beta, or the broader production application. Future material deployments still require their own owner authorization.
+The owner has authorized the five Stage 1B capability proofs in SNDISH-015. Preserve the instrumented Stage 1A Live Lab at `app.snapndish.com`, its direct chat entry, protected owner review, controlled evaluation, and private results. Build Stage 1B incrementally on separate Snap n Dish staging resources. This does not authorize a public beta, commercial-alpha build, or production deployment. Future production deployments require explicit owner authorization.
 
 ## Snap n Dish build principles
 
@@ -33,4 +33,4 @@ Write down the existing system, its authoritative owner, the requested extension
 
 ## Out of scope unless separately authorized
 
-No Snap n Done provider, job, quote, routing/BID_READY, matching, offer, fee, tip, transfer, Stripe/payment, supply, marketplace SMS or Walter policy belongs here. Do not mutate Snap n Done, Procure, Walter, Clink Pass or their resources. Do not build Stage 1B, a production app, grocery commerce, a recipe corpus, native clients or a parent-profile service as part of governance installation.
+No Snap n Done provider, job, quote, routing/BID_READY, matching, offer, fee, tip, transfer, Stripe/payment, supply, marketplace SMS or Walter policy belongs here. Do not mutate Snap n Done, Procure, Walter, Clink Pass or their resources. Stage 1B authorizes only realtime Talk It, conversational Snap It, durable/current conversation, minimal cross-device continuation, and one closed-app return proof. Do not build grocery commerce, a recipe corpus, native clients, a parent-profile service, or the commercial-alpha application.

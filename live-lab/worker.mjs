@@ -1,10 +1,15 @@
 import { instructionsFor, instructionsForCandidate, estimateUsd, BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, CONTEXT_VERSION, SCENARIO_VERSION } from '../src/config.ts';
 import { page } from './ui.mjs';
+import { stripJpegMetadata } from './jpeg.mjs';
+import { serviceWorker } from './push-sw.mjs';
 
 const DAY = 86_400_000;
+const VOICE_MODEL = 'gpt-realtime-2.1';
 const REVIEW_COOKIE = '__Host-sndlab';
 const SESSION_COOKIE = '__Host-sndlab-session';
+const CUSTOMER_COOKIE = '__Host-sndlab-customer';
 const encoder = new TextEncoder();
+const isStage1b = env => env.STAGE1B_ENABLED === 'true';
 const BASE_HEADERS = {
   'Cache-Control': 'no-store',
   'X-Content-Type-Options': 'nosniff',
@@ -52,6 +57,20 @@ async function makeSessionCookie(secret, id, expiresAt) {
   const payload = `${id}.${Date.parse(expiresAt)}`;
   return `${payload}.${await mac(secret, payload)}`;
 }
+async function makeCustomerCookie(secret, id, expiresAt) {
+  const payload = `${id}.${Date.parse(expiresAt)}`;
+  return `${payload}.${await mac(secret, payload)}`;
+}
+async function currentCustomer(request, env) {
+  if (!isStage1b(env)) return null;
+  const token = cookieValue(request, CUSTOMER_COOKIE);
+  const pieces = token?.split('.') ?? [];
+  if (pieces.length !== 3 || !/^[0-9a-f-]{36}$/i.test(pieces[0])
+    || !Number.isFinite(Number(pieces[1])) || Number(pieces[1]) < Date.now()
+    || !equal(pieces[2], await mac(env.COOKIE_SIGNING_KEY, `${pieces[0]}.${pieces[1]}`))) return null;
+  return env.DB.prepare('SELECT id,expires_at FROM customers WHERE id=? AND expires_at>?')
+    .bind(pieces[0], now()).first();
+}
 async function authorizedSession(request, secret, id) {
   const token = cookieValue(request, SESSION_COOKIE);
   if (!token) return false;
@@ -59,12 +78,20 @@ async function authorizedSession(request, secret, id) {
   if (pieces.length !== 3 || pieces[0] !== id || !Number.isFinite(Number(pieces[1])) || Number(pieces[1]) < Date.now()) return false;
   return equal(pieces[2], await mac(secret, `${pieces[0]}.${pieces[1]}`));
 }
-function html(kind) {
+async function canUseSession(request, env, id) {
+  if (await authorizedSession(request, env.COOKIE_SIGNING_KEY, id)) return true;
+  const customer = await currentCustomer(request, env);
+  if (!customer) return false;
+  const session = await getSession(env.DB, id);
+  return session?.customer_id === customer.id;
+}
+function html(kind, env) {
   const nonce = randomToken(15);
-  return new Response(page(kind, nonce), { headers: {
+  return new Response(page(kind, nonce, isStage1b(env)), { headers: {
     ...BASE_HEADERS,
+    'Permissions-Policy': isStage1b(env) ? 'camera=(self), microphone=(self), geolocation=()' : BASE_HEADERS['Permissions-Policy'],
     'Content-Type': 'text/html; charset=utf-8',
-    'Content-Security-Policy': `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
+    'Content-Security-Policy': `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; img-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
   } });
 }
 async function bodyJson(request) {
@@ -73,6 +100,32 @@ async function bodyJson(request) {
   try { return JSON.parse(raw); }
   catch { throw new Error('INVALID_JSON'); }
 }
+async function boundedBytes(request, max = 2_000_000) {
+  if (Number(request.headers.get('Content-Length')) > max) throw new Error('IMAGE_TOO_LARGE');
+  if (!request.body) throw new Error('EMPTY_IMAGE');
+  const reader = request.body.getReader();
+  const pieces = [];
+  let size = 0;
+  while (true) {
+    const next = await reader.read();
+    if (next.done) break;
+    size += next.value.byteLength;
+    if (size > max) { await reader.cancel(); throw new Error('IMAGE_TOO_LARGE'); }
+    pieces.push(next.value);
+  }
+  if (!size) throw new Error('EMPTY_IMAGE');
+  const result = new Uint8Array(size);
+  let offset = 0;
+  for (const piece of pieces) { result.set(piece, offset); offset += piece.byteLength; }
+  return result;
+}
+function base64(bytes) {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 8192)
+    binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  return btoa(binary);
+}
+function b64url(bytes) { return base64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
 function sameOrigin(request) {
   return request.headers.get('Origin') === new URL(request.url).origin;
 }
@@ -84,7 +137,10 @@ async function getSession(db, id) {
   return db.prepare('SELECT * FROM sessions WHERE id=? AND expires_at>?').bind(id, now()).first();
 }
 function publicSession(s) {
-  return { id: s.id, created_at: s.created_at, updated_at: s.updated_at, revision: s.revision, customer_context: s.customer_context };
+  return { id: s.id, created_at: s.created_at, updated_at: s.updated_at, revision: s.revision,
+    customer_context: s.customer_context, meal_revision: s.meal_revision ?? 0,
+    meal_source_turn_id: s.meal_source_turn_id ?? null, meal_accepted_at: s.meal_accepted_at ?? null,
+    active_voice_id: s.active_voice_until > now() ? s.active_voice_id : null };
 }
 
 async function createSession(request, env) {
@@ -94,17 +150,148 @@ async function createSession(request, env) {
   const id = crypto.randomUUID();
   const at = now();
   const expires = new Date(Date.now() + 30 * DAY).toISOString();
-  await env.DB.prepare('INSERT INTO sessions (id,created_at,updated_at,revision,customer_context,expires_at) VALUES (?,?,?,?,?,?)')
-    .bind(id, at, at, 0, context, expires).run();
+  let customer = await currentCustomer(request, env);
+  if (isStage1b(env) && !customer) {
+    customer = { id: crypto.randomUUID(), expires_at: expires };
+    await env.DB.prepare('INSERT INTO customers (id,created_at,expires_at) VALUES (?,?,?)')
+      .bind(customer.id, at, expires).run();
+  } else if (isStage1b(env)) {
+    await env.DB.prepare('UPDATE customers SET expires_at=? WHERE id=? AND expires_at>?')
+      .bind(expires, customer.id, at).run();
+    customer.expires_at = expires;
+  }
+  await env.DB.prepare('INSERT INTO sessions (id,created_at,updated_at,revision,customer_context,expires_at,customer_id) VALUES (?,?,?,?,?,?,?)')
+    .bind(id, at, at, 0, context, expires, customer?.id ?? null).run();
   await event(env.DB, id, null, 0, 'session_created', { context_supplied: Boolean(context) });
-  return json({ id, revision: 0 }, 201, { 'Set-Cookie': `${SESSION_COOKIE}=${await makeSessionCookie(env.COOKIE_SIGNING_KEY, id, expires)}; Path=/; Max-Age=2592000; HttpOnly; Secure; SameSite=Strict` });
+  const result = json({ id, revision: 0 }, 201, { 'Set-Cookie': `${SESSION_COOKIE}=${await makeSessionCookie(env.COOKIE_SIGNING_KEY, id, expires)}; Path=/; Max-Age=2592000; HttpOnly; Secure; SameSite=Strict` });
+  if (customer && isStage1b(env)) result.headers.append('Set-Cookie',
+    `${CUSTOMER_COOKIE}=${await makeCustomerCookie(env.COOKIE_SIGNING_KEY, customer.id, customer.expires_at)}; Path=/; Max-Age=2592000; HttpOnly; Secure; SameSite=Strict`);
+  return result;
+}
+
+async function hashPairCode(code) {
+  return [...new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(code)))].map(x => x.toString(16).padStart(2, '0')).join('');
+}
+async function startPair(request, env) {
+  const customer = await currentCustomer(request, env);
+  if (!customer) return json({ error: 'NOT_FOUND' }, 404);
+  const { sessionId } = await bodyJson(request);
+  const session = await getSession(env.DB, sessionId);
+  if (!session || session.customer_id !== customer.id) return json({ error: 'NOT_FOUND' }, 404);
+  const code = randomToken(24);
+  const at = now(), expires = new Date(Date.now() + 10 * 60_000).toISOString();
+  await env.DB.prepare('INSERT INTO pairing_links (code_hash,customer_id,session_id,created_at,expires_at) VALUES (?,?,?,?,?)')
+    .bind(await hashPairCode(code), customer.id, sessionId, at, expires).run();
+  return json({ code, expires_at: expires });
+}
+async function claimPair(request, env) {
+  const { code } = await bodyJson(request);
+  if (typeof code !== 'string' || !/^[A-Za-z0-9_-]{32}$/.test(code)) return json({ error: 'INVALID_PAIR_CODE' }, 400);
+  const codeHash = await hashPairCode(code);
+  const at = now();
+  const pair = await env.DB.prepare('SELECT customer_id,session_id FROM pairing_links WHERE code_hash=? AND claimed_at IS NULL AND expires_at>?')
+    .bind(codeHash, at).first();
+  if (!pair) return json({ error: 'PAIR_UNAVAILABLE' }, 404);
+  const claimed = await env.DB.prepare('UPDATE pairing_links SET claimed_at=? WHERE code_hash=? AND claimed_at IS NULL AND expires_at>?')
+    .bind(at, codeHash, at).run();
+  if (claimed.meta.changes !== 1) return json({ error: 'PAIR_UNAVAILABLE' }, 404);
+  const customer = await env.DB.prepare('SELECT id,expires_at FROM customers WHERE id=? AND expires_at>?')
+    .bind(pair.customer_id, at).first();
+  if (!customer) return json({ error: 'PAIR_UNAVAILABLE' }, 404);
+  return json({ sessionId: pair.session_id }, 200, { 'Set-Cookie':
+    `${CUSTOMER_COOKIE}=${await makeCustomerCookie(env.COOKIE_SIGNING_KEY, customer.id, customer.expires_at)}; Path=/; Max-Age=2592000; HttpOnly; Secure; SameSite=Strict` });
+}
+async function customerSessions(request, env) {
+  const customer = await currentCustomer(request, env);
+  if (!customer) return json({ error: 'NOT_FOUND' }, 404);
+  const sessions = await env.DB.prepare('SELECT id,created_at,updated_at,revision,meal_revision FROM sessions WHERE customer_id=? AND expires_at>? ORDER BY updated_at DESC LIMIT 20')
+    .bind(customer.id, now()).all();
+  return json({ sessions: sessions.results ?? [] });
+}
+
+async function acceptMeal(request, env, id) {
+  const input = await bodyJson(request);
+  const session = await getSession(env.DB, id);
+  if (!session) return json({ error: 'NOT_FOUND' }, 404);
+  if (session.active_voice_id && session.active_voice_until > now())
+    return json({ error: 'VOICE_ACTIVE' }, 409);
+  if (!Number.isInteger(input.expectedMealRevision) || input.expectedMealRevision !== session.meal_revision ||
+    !Number.isInteger(input.expectedRevision) || input.expectedRevision !== session.revision)
+    return json({ error: 'STALE_MEAL', mealRevision: session.meal_revision, revision: session.revision }, 409);
+  const selected = await env.DB.prepare("SELECT id FROM turns WHERE id=? AND session_id=? AND role='assistant'")
+    .bind(input.assistantTurnId, id).first();
+  if (!selected) return json({ error: 'NOT_FOUND' }, 404);
+  const acceptedAt = now();
+  const saved = await env.DB.batch([
+    env.DB.prepare(`UPDATE sessions SET revision=revision+1,meal_revision=meal_revision+1,
+      meal_source_turn_id=?,meal_accepted_at=?,updated_at=?
+      WHERE id=? AND revision=? AND meal_revision=? AND (active_voice_id IS NULL OR active_voice_until<=?)`)
+      .bind(selected.id, acceptedAt, acceptedAt, id, session.revision, session.meal_revision, acceptedAt),
+    env.DB.prepare(`INSERT INTO state_events (id,session_id,turn_id,revision,kind,at,details_json)
+      SELECT ?,id,?,revision,'meal_accepted',?,? FROM sessions WHERE id=? AND meal_revision=? AND meal_source_turn_id=?`)
+      .bind(crypto.randomUUID(), selected.id, acceptedAt, JSON.stringify({ meal_revision: session.meal_revision + 1 }),
+        id, session.meal_revision + 1, selected.id),
+  ]);
+  if (saved[0].meta.changes !== 1) return json({ error: 'STALE_MEAL' }, 409);
+  return json({ revision: session.revision + 1, mealRevision: session.meal_revision + 1, sourceTurnId: selected.id });
+}
+
+async function uploadImage(request, env, id) {
+  if (!env.IMAGES) return json({ error: 'IMAGE_STORAGE_UNAVAILABLE' }, 503);
+  if (request.headers.get('Content-Type')?.split(';')[0].trim() !== 'image/jpeg')
+    return json({ error: 'JPEG_REQUIRED' }, 415);
+  let cleaned;
+  try { cleaned = stripJpegMetadata(await boundedBytes(request)); }
+  catch (error) { return json({ error: error.message === 'IMAGE_TOO_LARGE' ? 'IMAGE_TOO_LARGE' : 'INVALID_JPEG' }, 400); }
+  const count = await env.DB.prepare('SELECT COUNT(*) AS n FROM images WHERE session_id=?').bind(id).first();
+  if ((count?.n ?? 0) >= 8) return json({ error: 'IMAGE_LIMIT' }, 429);
+  const imageId = crypto.randomUUID(), at = now();
+  const session = await getSession(env.DB, id);
+  if (!session) return json({ error: 'NOT_FOUND' }, 404);
+  const key = `${id}/${imageId}`;
+  await env.IMAGES.put(key, cleaned, { httpMetadata: { contentType: 'image/jpeg' } });
+  try {
+    await env.DB.prepare('INSERT INTO images (id,session_id,created_at,expires_at,byte_length) VALUES (?,?,?,?,?)')
+      .bind(imageId, id, at, session.expires_at, cleaned.length).run();
+  } catch (error) { await env.IMAGES.delete(key); throw error; }
+  return json({ imageId, byteLength: cleaned.length }, 201);
+}
+async function showImage(env, id, imageId) {
+  if (!env.IMAGES) return json({ error: 'IMAGE_STORAGE_UNAVAILABLE' }, 503);
+  const image = await env.DB.prepare('SELECT id FROM images WHERE id=? AND session_id=? AND expires_at>?')
+    .bind(imageId, id, now()).first();
+  if (!image) return json({ error: 'NOT_FOUND' }, 404);
+  const stored = await env.IMAGES.get(`${id}/${imageId}`);
+  if (!stored) return json({ error: 'NOT_FOUND' }, 404);
+  return new Response(stored.body, { headers: { ...BASE_HEADERS,
+    'Content-Type': 'image/jpeg', 'Content-Disposition': 'inline', 'Content-Security-Policy': "default-src 'none'" } });
+}
+async function inputImage(env, id, imageId) {
+  const stored = await env.IMAGES?.get(`${id}/${imageId}`);
+  if (!stored) throw new Error('IMAGE_UNAVAILABLE');
+  return `data:image/jpeg;base64,${base64(new Uint8Array(await stored.arrayBuffer()))}`;
+}
+async function messagesWithImages(env, id, turns) {
+  const priorImages = turns.filter(t => t.role === 'user' && t.image_id).map(t => t.image_id);
+  const latestPriorImage = priorImages.at(-1);
+  const messages = [], imageIds = [];
+  for (const turn of turns) {
+    if (turn.image_id && (turn.image_id === latestPriorImage || turn === turns.at(-1))) {
+      imageIds.push(turn.image_id);
+      messages.push({ role: 'user', content: [
+        { type: 'input_text', text: turn.text || 'Help me explore this food photo.' },
+        { type: 'input_image', image_url: await inputImage(env, id, turn.image_id), detail: 'auto' },
+      ] });
+    } else messages.push({ role: turn.role, content: turn.text || '[Photo attached earlier]' });
+  }
+  return { messages, imageIds };
 }
 
 async function showSession(env, id) {
   const session = await getSession(env.DB, id);
   if (!session) return json({ error: 'NOT_FOUND' }, 404);
   const [turns, feedback] = await Promise.all([
-    env.DB.prepare("SELECT id,role,text,created_at,revision FROM turns WHERE session_id=? ORDER BY revision,CASE role WHEN 'user' THEN 0 ELSE 1 END,created_at,id").bind(id).all(),
+    env.DB.prepare("SELECT id,role,text,image_id,source,created_at,revision FROM turns WHERE session_id=? ORDER BY revision,CASE role WHEN 'user' THEN 0 ELSE 1 END,created_at,id").bind(id).all(),
     env.DB.prepare("SELECT turn_id,details_json FROM state_events WHERE session_id=? AND kind='turn_feedback' ORDER BY rowid").bind(id).all(),
   ]);
   const latest = new Map();
@@ -145,16 +332,27 @@ async function reviewSession(env, id) {
     env.DB.prepare('SELECT * FROM model_calls WHERE session_id=? ORDER BY requested_at,id').bind(id).all(),
     env.DB.prepare('SELECT * FROM state_events WHERE session_id=? ORDER BY at,id').bind(id).all(),
   ]);
+  const [voiceSessions, reminders] = isStage1b(env) ? await Promise.all([
+    env.DB.prepare('SELECT * FROM voice_sessions WHERE session_id=? ORDER BY opened_at').bind(id).all(),
+    env.DB.prepare('SELECT * FROM return_reminders WHERE session_id=? ORDER BY created_at').bind(id).all(),
+  ]) : [{ results: [] }, { results: [] }];
   const timeline = [
-    ...(turns.results ?? []).map(t => ({ at: t.created_at, revision: t.revision, kind: `conversation_${t.role}`, text: t.text })),
+    ...(turns.results ?? []).map(t => ({ at: t.created_at, revision: t.revision, kind: `conversation_${t.role}`,
+      text: t.text, image_id: t.image_id ?? null, source: t.source ?? 'write' })),
     ...(calls.results ?? []).map(c => ({ at: c.requested_at, revision: c.revision, kind: `model_call_${c.status}`,
       details: JSON.stringify({ id: c.id, requested_model: c.requested_model, response_model: c.response_model,
         provider_response_id: c.provider_response_id, behavior_version: c.behavior_version,
         context_version: c.context_version, reasoning_effort: c.reasoning_effort,
-        customer_context_supplied: c.customer_context_snapshot, memory_retrieved: c.memory_retrieved,
-        tool_calls: JSON.parse(c.tool_calls_json), first_text_ms: c.first_text_ms,
+        customer_context_supplied: c.customer_context_snapshot,
+        accepted_meal_supplied: c.accepted_meal_snapshot,
+        accepted_meal_revision: c.accepted_meal_revision,
+        memory_retrieved: c.memory_retrieved, image_ids: JSON.parse(c.image_ids_json || '[]'),
+        tool_calls: JSON.parse(c.tool_calls_json), modality_usage: c.modality_usage_json ? JSON.parse(c.modality_usage_json) : null,
+        first_text_ms: c.first_text_ms,
         first_useful_ms: c.first_useful_ms, first_useful_excerpt: c.first_useful_excerpt,
-        first_useful_method: 'first >=50-character streamed prefix with sentence end or list item',
+        first_useful_method: c.requested_model === VOICE_MODEL
+          ? 'first spoken transcript delta after speech stop (proxy)'
+          : 'first >=50-character streamed prefix with sentence end or list item (proxy)',
         full_ms: c.full_ms, input_tokens: c.input_tokens,
         cached_input_tokens: c.cached_input_tokens, output_tokens: c.output_tokens,
         reasoning_tokens: c.reasoning_tokens, estimated_usd: c.estimated_usd,
@@ -162,6 +360,15 @@ async function reviewSession(env, id) {
         model_said: c.assistant_text }, null, 2) })),
     ...(events.results ?? []).map(e => ({ at: e.at, revision: e.revision, kind: `state_${e.kind}`,
       details: JSON.stringify({ turn_id: e.turn_id, ...JSON.parse(e.details_json) }) })),
+    ...(voiceSessions.results ?? []).map(v => ({ at: v.opened_at, revision: null, kind: 'voice_session',
+      details: JSON.stringify({ id: v.id, model: v.model, behavior_version: v.behavior_version,
+        context_snapshot: v.context_snapshot, meal_snapshot: v.meal_snapshot,
+        transcript_snapshot: v.transcript_snapshot, connect_ms: v.connect_ms,
+        provider_call_id: v.provider_call_id, closed_at: v.closed_at, error_code: v.error_code }, null, 2) })),
+    ...(reminders.results ?? []).map(r => ({ at: r.created_at, revision: null, kind: 'return_reminder',
+      details: JSON.stringify({ id: r.id, due_at: r.due_at, status: r.status, attempt_count: r.attempt_count,
+        push_accepted_at: r.push_accepted_at, displayed_at: r.displayed_at,
+        clicked_at: r.clicked_at, error_code: r.error_code }, null, 2) })),
   ].sort((a, b) => a.at.localeCompare(b.at));
   return json({ session: publicSession(session), timeline });
 }
@@ -186,13 +393,37 @@ function behaviorFor(env, context) {
 async function acceptTurn(env, id, input) {
   const session = await getSession(env.DB, id);
   if (!session) return { response: json({ error: 'NOT_FOUND' }, 404) };
+  if (isStage1b(env) && session.active_voice_id && session.active_voice_until > now())
+    return { response: json({ error: 'VOICE_ACTIVE' }, 409) };
   const text = typeof input.text === 'string' ? input.text.trim() : '';
   const turnId = input.turnId;
-  if (!text || text.length > 4000 || typeof turnId !== 'string' || !/^[0-9a-f-]{36}$/i.test(turnId))
+  const imageId = isStage1b(env) && typeof input.imageId === 'string' ? input.imageId : null;
+  if ((!text && !imageId) || text.length > 4000 || typeof turnId !== 'string' || !/^[0-9a-f-]{36}$/i.test(turnId)
+    || (imageId && !/^[0-9a-f-]{36}$/i.test(imageId)))
     return { response: json({ error: 'INVALID_TURN' }, 400) };
+  const existing = await env.DB.prepare("SELECT revision,text,image_id FROM turns WHERE id=? AND session_id=? AND role='user'")
+    .bind(turnId, id).first();
+  if (existing) {
+    if (existing.text !== text || (existing.image_id ?? null) !== imageId)
+      return { response: json({ error: 'TURN_ID_CONFLICT' }, 409) };
+    const outcome = await turnResult(env, id, turnId);
+    if (outcome.status === 'accepted' || session.revision !== existing.revision)
+      return { response: json(outcome) };
+    if (outcome.status === 'pending' && !outcome.leaseExpired)
+      return { response: json(outcome, 202) };
+    const prior = await env.DB.prepare("SELECT role,text,image_id FROM turns WHERE session_id=? AND revision<=? ORDER BY revision,CASE role WHEN 'user' THEN 0 ELSE 1 END,created_at,id")
+      .bind(id, existing.revision).all();
+    return { session, text, imageId, turnId, revision: existing.revision,
+      ...await messagesWithImages(env, id, prior.results ?? []) };
+  }
   if (!Number.isInteger(input.expectedRevision) || input.expectedRevision !== session.revision)
     return { response: json({ error: 'STALE_REVISION', revision: session.revision }, 409) };
-  const prior = await env.DB.prepare("SELECT role,text FROM turns WHERE session_id=? ORDER BY revision,CASE role WHEN 'user' THEN 0 ELSE 1 END,created_at,id").bind(id).all();
+  if (imageId) {
+    const image = await env.DB.prepare('SELECT id FROM images WHERE id=? AND session_id=? AND turn_id IS NULL AND expires_at>?')
+      .bind(imageId, id, now()).first();
+    if (!image) return { response: json({ error: 'IMAGE_UNAVAILABLE' }, 400) };
+  }
+  const prior = await env.DB.prepare("SELECT role,text,image_id FROM turns WHERE session_id=? ORDER BY revision,CASE role WHEN 'user' THEN 0 ELSE 1 END,created_at,id").bind(id).all();
   const userCount = (prior.results ?? []).filter(t => t.role === 'user').length;
   if (userCount >= 50) return { response: json({ error: 'SESSION_LIMIT' }, 429) };
   const today = now().slice(0, 10);
@@ -203,19 +434,357 @@ async function acceptTurn(env, id, input) {
   const revision = session.revision + 1;
   const at = now();
   const accepted = await env.DB.batch([
-    env.DB.prepare('UPDATE sessions SET revision=?,last_turn_id=?,updated_at=? WHERE id=? AND revision=?')
-      .bind(revision, turnId, at, id, session.revision),
-    env.DB.prepare(`INSERT INTO turns (id,session_id,revision,role,text,created_at)
-      SELECT ?,id,?,'user',?,? FROM sessions WHERE id=? AND revision=? AND last_turn_id=?`)
-      .bind(turnId, revision, text, at, id, revision, turnId),
+    env.DB.prepare(`UPDATE sessions SET revision=?,last_turn_id=?,updated_at=? WHERE id=? AND revision=?
+      AND (active_voice_id IS NULL OR active_voice_until<=?)`)
+      .bind(revision, turnId, at, id, session.revision, at),
+    env.DB.prepare(`INSERT INTO turns (id,session_id,revision,role,text,image_id,created_at)
+      SELECT ?,id,?,'user',?,?,? FROM sessions WHERE id=? AND revision=? AND last_turn_id=?`)
+      .bind(turnId, revision, text, imageId, at, id, revision, turnId),
+    env.DB.prepare(`UPDATE images SET turn_id=? WHERE id=? AND session_id=? AND turn_id IS NULL
+      AND EXISTS (SELECT 1 FROM turns WHERE id=? AND session_id=?)`)
+      .bind(turnId, imageId, id, turnId, id),
     env.DB.prepare(`INSERT INTO state_events (id,session_id,turn_id,revision,kind,at,details_json)
       SELECT ?,id,? ,?,'user_turn_accepted',?,? FROM sessions WHERE id=? AND revision=? AND last_turn_id=?`)
       .bind(crypto.randomUUID(), turnId, revision, at, '{"text_stored_in":"turns"}', id, revision, turnId),
   ]);
   if (accepted[0].meta.changes !== 1) return { response: json({ error: 'STALE_REVISION' }, 409) };
-  const messages = (prior.results ?? []).map(t => ({ role: t.role, content: t.text }));
-  messages.push({ role: 'user', content: text });
-  return { session, text, turnId, revision, messages };
+  const assembled = await messagesWithImages(env, id,
+    [...(prior.results ?? []), { role: 'user', text, image_id: imageId }]);
+  return { session, text, imageId, turnId, revision, ...assembled };
+}
+
+async function turnResult(env, id, turnId) {
+  const user = await env.DB.prepare("SELECT revision FROM turns WHERE id=? AND session_id=? AND role='user'")
+    .bind(turnId, id).first();
+  if (!user) return { error: 'NOT_FOUND', status: 'missing' };
+  const assistant = await env.DB.prepare("SELECT id,text FROM turns WHERE session_id=? AND revision=? AND role='assistant' ORDER BY created_at,id LIMIT 1")
+    .bind(id, user.revision).first();
+  if (assistant) return { turnId, revision: user.revision, status: 'accepted', assistant };
+  const op = await env.DB.prepare('SELECT status,lease_until FROM turn_operations WHERE user_turn_id=? AND session_id=?')
+    .bind(turnId, id).first();
+  const leaseExpired = !op || (op.status === 'pending' && op.lease_until < now());
+  return { turnId, revision: user.revision,
+    status: leaseExpired ? 'interrupted' : op.status, leaseExpired };
+}
+
+async function claimTurnOperation(env, id, turnId, revision, callId) {
+  const at = now();
+  const leaseUntil = new Date(Date.now() + 120_000).toISOString();
+  const first = await env.DB.prepare(`INSERT OR IGNORE INTO turn_operations
+    (user_turn_id,session_id,revision,current_call_id,status,lease_until,updated_at)
+    SELECT ?,id,?,?, 'pending',?,? FROM sessions WHERE id=? AND revision=?`)
+    .bind(turnId, revision, callId, leaseUntil, at, id, revision).run();
+  if (first.meta.changes === 1) return true;
+  const retry = await env.DB.prepare(`UPDATE turn_operations SET current_call_id=?,status='pending',lease_until=?,updated_at=?
+    WHERE user_turn_id=? AND session_id=? AND revision=? AND (status='error' OR (status='pending' AND lease_until<?))
+    AND EXISTS (SELECT 1 FROM sessions WHERE id=? AND revision=?)`)
+    .bind(callId, leaseUntil, at, turnId, id, revision, at, id, revision).run();
+  return retry.meta.changes === 1;
+}
+
+function voiceCost(usage) {
+  if (!usage || !Number.isFinite(usage.input_tokens) || !Number.isFinite(usage.output_tokens)) return null;
+  const incoming = usage.input_token_details ?? {}, outgoing = usage.output_token_details ?? {};
+  const cached = incoming.cached_tokens_details ?? {};
+  const textIn = Math.max(0, (incoming.text_tokens ?? 0) - (cached.text_tokens ?? 0));
+  const audioIn = Math.max(0, (incoming.audio_tokens ?? 0) - (cached.audio_tokens ?? 0));
+  const imageIn = Math.max(0, (incoming.image_tokens ?? 0) - (cached.image_tokens ?? 0));
+  return (textIn * 4 + audioIn * 32 + imageIn * 5 +
+    (cached.text_tokens ?? 0) * .4 + (cached.audio_tokens ?? 0) * .4 +
+    (cached.image_tokens ?? 0) * .5 + (outgoing.text_tokens ?? 0) * 24 +
+    (outgoing.audio_tokens ?? 0) * 64) / 1_000_000;
+}
+
+async function startVoice(request, env, id) {
+  if (!env.OPENAI_API_KEY) return json({ error: 'MODEL_UNAVAILABLE' }, 503);
+  const raw = await request.text();
+  if (raw.length > 32_000) return json({ error: 'REQUEST_TOO_LARGE' }, 413);
+  let input;
+  try { input = JSON.parse(raw); } catch { return json({ error: 'INVALID_JSON' }, 400); }
+  if (typeof input.sdp !== 'string' || !input.sdp.startsWith('v=0') || input.sdp.length > 24_000 ||
+    !Number.isInteger(input.expectedRevision)) return json({ error: 'INVALID_VOICE_START' }, 400);
+  const session = await getSession(env.DB, id);
+  if (!session) return json({ error: 'NOT_FOUND' }, 404);
+  if (session.revision !== input.expectedRevision ||
+    (session.active_voice_id && session.active_voice_until > now()))
+    return json({ error: 'STALE_REVISION', revision: session.revision }, 409);
+  const pending = await env.DB.prepare(`SELECT COUNT(*) AS n FROM turn_operations
+    WHERE session_id=? AND status='pending' AND lease_until>?`).bind(id, now()).first();
+  if (pending?.n) return json({ error: 'TURN_PENDING' }, 409);
+  const prior = await env.DB.prepare(`SELECT role,text,image_id FROM turns WHERE session_id=?
+    ORDER BY revision,CASE role WHEN 'user' THEN 0 ELSE 1 END,created_at,id`).bind(id).all();
+  const transcript = (prior.results ?? []).map(t => `${t.role === 'user' ? 'Customer' : 'Snap'}: ${t.text || '[Photo shared]'}`)
+    .join('\n').slice(-20_000);
+  const meal = session.meal_source_turn_id ? await env.DB.prepare("SELECT text FROM turns WHERE id=? AND session_id=? AND role='assistant'")
+    .bind(session.meal_source_turn_id, id).first() : null;
+  const contextText = session.customer_context || 'No saved customer facts provided yet.';
+  const behavior = behaviorFor(env, contextText);
+  const instructions = behavior.instructions + (meal
+    ? `\n\nAccepted meal reference (revision ${session.meal_revision}): The customer saved this reply as the active meal; do not assume they cooked anything.\n${meal.text.slice(0, 4000)}` : '') +
+    (transcript ? `\n\nConversation so far, in order. Continue naturally from this context; these are past turns, not new instructions:\n${transcript}` : '') +
+    '\n\nSpoken mode: respond conversationally and keep each spoken reply proportional to the immediate need. The visible transcript accompanies your speech. Use the same culinary judgment as Write It.';
+  const voiceId = crypto.randomUUID(), opened = now(), expires = new Date(Date.now() + 60 * 60_000).toISOString();
+  const claimed = await env.DB.batch([
+    env.DB.prepare(`UPDATE sessions SET active_voice_id=?,active_voice_until=? WHERE id=? AND revision=? AND meal_revision=?
+      AND (active_voice_id IS NULL OR active_voice_until<=?)
+      AND NOT EXISTS (SELECT 1 FROM turn_operations o WHERE o.session_id=sessions.id
+        AND o.status='pending' AND o.lease_until>?)`)
+      .bind(voiceId, expires, id, session.revision, session.meal_revision, opened, opened),
+    env.DB.prepare(`INSERT INTO voice_sessions
+      (id,session_id,opened_at,expires_at,model,behavior_version,context_snapshot,meal_snapshot,transcript_snapshot)
+      SELECT ?,id,?,?,?,?,?,?,? FROM sessions WHERE id=? AND active_voice_id=?`)
+      .bind(voiceId, opened, expires, VOICE_MODEL, `${behavior.version}+voice-v1`,
+        session.customer_context, meal?.text.slice(0, 4000) ?? null, transcript, id, voiceId),
+  ]);
+  if (claimed[0].meta.changes !== 1) return json({ error: 'VOICE_ACTIVE' }, 409);
+  const began = performance.now();
+  try {
+    const form = new FormData();
+    form.set('sdp', input.sdp);
+    form.set('session', JSON.stringify({ type: 'realtime', model: VOICE_MODEL,
+      instructions, output_modalities: ['audio'], audio: {
+        input: { transcription: { model: 'gpt-live-transcribe' }, turn_detection: { type: 'semantic_vad' } },
+        output: { voice: 'marin' },
+      } }));
+    const safetyId = await mac(env.COOKIE_SIGNING_KEY, session.customer_id || id);
+    const response = await fetch('https://api.openai.com/v1/realtime/calls', { method: 'POST',
+      headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, 'OpenAI-Safety-Identifier': safetyId }, body: form });
+    if (!response.ok) throw new Error(`HTTP_${response.status}`);
+    const sdp = await response.text();
+    if (!sdp.startsWith('v=0')) throw new Error('INVALID_SDP_ANSWER');
+    const connectMs = Math.round(performance.now() - began);
+    const callId = response.headers.get('Location')?.split('/').at(-1) ?? null;
+    await env.DB.prepare('UPDATE voice_sessions SET provider_call_id=?,connect_ms=? WHERE id=?')
+      .bind(callId, connectMs, voiceId).run();
+    await event(env.DB, id, null, session.revision, 'voice_connected',
+      { voice_session_id: voiceId, model: VOICE_MODEL, behavior_version: `${behavior.version}+voice-v1`, connect_ms: connectMs });
+    return json({ voiceSessionId: voiceId, sdp, model: VOICE_MODEL,
+      behaviorVersion: `${behavior.version}+voice-v1`, connectMs }, 201);
+  } catch (error) {
+    const code = error instanceof Error && /^[A-Z_0-9]+$/.test(error.message) ? error.message : 'VOICE_CONNECT_ERROR';
+    await env.DB.batch([
+      env.DB.prepare('UPDATE voice_sessions SET closed_at=?,error_code=? WHERE id=?').bind(now(), code, voiceId),
+      env.DB.prepare('UPDATE sessions SET active_voice_id=NULL,active_voice_until=NULL WHERE id=? AND active_voice_id=?')
+        .bind(id, voiceId),
+    ]);
+    return json({ error: code }, 502);
+  }
+}
+
+async function voiceEvent(request, env, id) {
+  const input = await bodyJson(request);
+  const voiceId = input.voiceSessionId;
+  if (typeof voiceId !== 'string' || !/^[0-9a-f-]{36}$/i.test(voiceId))
+    return json({ error: 'INVALID_VOICE_SESSION' }, 400);
+  const session = await getSession(env.DB, id);
+  if (!session || session.active_voice_id !== voiceId || session.active_voice_until <= now())
+    return json({ error: 'STALE_VOICE_SESSION' }, 409);
+  const voice = await env.DB.prepare('SELECT * FROM voice_sessions WHERE id=? AND session_id=? AND closed_at IS NULL')
+    .bind(voiceId, id).first();
+  if (!voice) return json({ error: 'STALE_VOICE_SESSION' }, 409);
+  if (input.type === 'user') {
+    const itemId = input.itemId, transcript = typeof input.transcript === 'string' ? input.transcript.trim() : '';
+    if (typeof itemId !== 'string' || !/^[A-Za-z0-9_-]{4,128}$/.test(itemId) || !transcript || transcript.length > 4000)
+      return json({ error: 'INVALID_VOICE_TURN' }, 400);
+    const existing = await env.DB.prepare('SELECT turn_id,revision FROM voice_user_items WHERE voice_session_id=? AND provider_item_id=?')
+      .bind(voiceId, itemId).first();
+    if (existing) return json({ turnId: existing.turn_id, revision: existing.revision, status: 'accepted' });
+    const turnId = crypto.randomUUID(), revision = session.revision + 1, at = now();
+    const writes = await env.DB.batch([
+      env.DB.prepare('UPDATE sessions SET revision=?,last_turn_id=?,updated_at=? WHERE id=? AND revision=? AND active_voice_id=?')
+        .bind(revision, turnId, at, id, session.revision, voiceId),
+      env.DB.prepare(`INSERT INTO turns (id,session_id,revision,role,text,created_at,source,provider_item_id)
+        SELECT ?,id,?,'user',?,?,'talk',? FROM sessions WHERE id=? AND revision=? AND last_turn_id=?`)
+        .bind(turnId, revision, transcript, at, itemId, id, revision, turnId),
+      env.DB.prepare(`INSERT INTO voice_user_items (voice_session_id,provider_item_id,turn_id,revision,transcription_usage_json)
+        SELECT ?,?,?,?,? WHERE EXISTS (SELECT 1 FROM turns WHERE id=?)`)
+        .bind(voiceId, itemId, turnId, revision, input.usage ? JSON.stringify(input.usage).slice(0, 3000) : null, turnId),
+      env.DB.prepare(`INSERT INTO state_events (id,session_id,turn_id,revision,kind,at,details_json)
+        SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM turns WHERE id=?)`)
+        .bind(crypto.randomUUID(), id, turnId, revision, 'voice_user_turn_accepted', at,
+          JSON.stringify({ provider_item_id: itemId, source: 'client_observed_transcript' }), turnId),
+    ]);
+    return writes[0].meta.changes === 1 ? json({ turnId, revision, status: 'accepted' })
+      : json({ error: 'STALE_REVISION', revision: session.revision }, 409);
+  }
+  if (input.type === 'assistant') {
+    const responseId = input.responseId, itemId = input.userItemId;
+    const transcript = typeof input.transcript === 'string' ? input.transcript.trim() : '';
+    if (typeof responseId !== 'string' || !/^[A-Za-z0-9_-]{4,128}$/.test(responseId) ||
+      typeof itemId !== 'string' || !/^[A-Za-z0-9_-]{4,128}$/.test(itemId) || !transcript || transcript.length > 8000)
+      return json({ error: 'INVALID_VOICE_REPLY' }, 400);
+    const prior = await env.DB.prepare('SELECT status FROM voice_assistant_items WHERE voice_session_id=? AND provider_response_id=?')
+      .bind(voiceId, responseId).first();
+    if (prior) return json({ status: prior.status });
+    const user = await env.DB.prepare('SELECT turn_id,revision FROM voice_user_items WHERE voice_session_id=? AND provider_item_id=?')
+      .bind(voiceId, itemId).first();
+    if (!user) return json({ error: 'VOICE_USER_NOT_SAVED' }, 409);
+    const at = now(), callId = crypto.randomUUID(), assistantId = crypto.randomUUID();
+    const usage = typeof input.usage === 'object' && input.usage !== null ? input.usage : null;
+    const firstMs = Number.isInteger(input.firstUsefulMs) && input.firstUsefulMs >= 0 ? input.firstUsefulMs : null;
+    const fullMs = Number.isInteger(input.fullMs) && input.fullMs >= 0 ? input.fullMs : null;
+    const cost = voiceCost(usage);
+    const writes = await env.DB.batch([
+      env.DB.prepare(`INSERT INTO turns (id,session_id,revision,role,text,created_at,model_call_id,source,provider_item_id)
+        SELECT ?,s.id,?,'assistant',?,?,?,?,? FROM sessions s
+        WHERE s.id=? AND s.revision=? AND s.active_voice_id=?
+        AND NOT EXISTS (SELECT 1 FROM turns t WHERE t.session_id=s.id AND t.revision=? AND t.role='assistant')`)
+        .bind(assistantId, user.revision, transcript, at, callId, 'talk', responseId,
+          id, user.revision, voiceId, user.revision),
+      env.DB.prepare(`INSERT INTO model_calls
+        (id,session_id,user_turn_id,revision,requested_at,completed_at,status,requested_model,response_model,
+         provider_response_id,behavior_version,context_version,reasoning_effort,customer_context_snapshot,
+         memory_retrieved,tool_calls_json,image_ids_json,accepted_meal_snapshot,accepted_meal_revision,
+         first_text_ms,first_useful_ms,full_ms,input_tokens,cached_input_tokens,output_tokens,
+         estimated_usd,assistant_text,modality_usage_json)
+        VALUES (?,?,?,?,?,?,CASE WHEN EXISTS (SELECT 1 FROM turns WHERE model_call_id=?)
+          THEN 'accepted' ELSE 'stale_rejected' END,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .bind(callId, id, user.turn_id, user.revision, voice.opened_at, at, callId, VOICE_MODEL, VOICE_MODEL,
+          responseId, voice.behavior_version, 'stage1b-context-v1', 'provider-default', voice.context_snapshot,
+          'none — no memory store in Stage 1B', '[]', '[]', voice.meal_snapshot,
+          voice.meal_snapshot ? session.meal_revision : null, firstMs, firstMs, fullMs,
+          usage?.input_tokens ?? null, usage?.input_token_details?.cached_tokens ?? null,
+          usage?.output_tokens ?? null, cost, transcript, usage ? JSON.stringify(usage).slice(0, 4000) : null),
+      env.DB.prepare(`INSERT INTO voice_assistant_items (voice_session_id,provider_response_id,model_call_id,status)
+        SELECT ?,?,?,CASE WHEN EXISTS (SELECT 1 FROM turns WHERE model_call_id=?)
+          THEN 'accepted' ELSE 'stale_rejected' END`)
+        .bind(voiceId, responseId, callId, callId),
+      env.DB.prepare(`INSERT INTO state_events (id,session_id,turn_id,revision,kind,at,details_json)
+        VALUES (?,?,?,?,?,?,?)`)
+        .bind(crypto.randomUUID(), id, user.turn_id, user.revision,
+          'voice_assistant_result', at, JSON.stringify({ provider_response_id: responseId, model_call_id: callId,
+            source: 'client_observed_realtime_event', status: session.revision === user.revision ? 'accepted' : 'stale_rejected' })),
+    ]);
+    return json({ status: writes[0].meta.changes === 1 ? 'accepted' : 'stale_rejected',
+      revision: user.revision, assistantTurnId: writes[0].meta.changes === 1 ? assistantId : null });
+  }
+  return json({ error: 'INVALID_VOICE_EVENT' }, 400);
+}
+
+async function stopVoice(request, env, id) {
+  const input = await bodyJson(request);
+  const voiceId = input.voiceSessionId, at = now();
+  if (typeof voiceId !== 'string' || !/^[0-9a-f-]{36}$/i.test(voiceId)) return json({ error: 'INVALID_VOICE_SESSION' }, 400);
+  await env.DB.batch([
+    env.DB.prepare('UPDATE voice_sessions SET closed_at=? WHERE id=? AND session_id=? AND closed_at IS NULL')
+      .bind(at, voiceId, id),
+    env.DB.prepare('UPDATE sessions SET active_voice_id=NULL,active_voice_until=NULL WHERE id=? AND active_voice_id=?')
+      .bind(id, voiceId),
+  ]);
+  return json({ stopped: true });
+}
+
+function pushHostAllowed(endpoint) {
+  try {
+    const url = new URL(endpoint);
+    return url.protocol === 'https:' && !url.username && !url.password &&
+      (url.hostname === 'fcm.googleapis.com' || url.hostname === 'updates.push.services.mozilla.com' ||
+        url.hostname.endsWith('.push.apple.com'));
+  } catch { return false; }
+}
+async function subscribePush(request, env) {
+  const customer = await currentCustomer(request, env);
+  if (!customer) return json({ error: 'NOT_FOUND' }, 404);
+  if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_JWK || !env.VAPID_SUBJECT)
+    return json({ error: 'PUSH_UNAVAILABLE' }, 503);
+  const input = await bodyJson(request);
+  const endpoint = input?.subscription?.endpoint;
+  if (typeof endpoint !== 'string' || endpoint.length > 2000 || !pushHostAllowed(endpoint))
+    return json({ error: 'UNSUPPORTED_PUSH_ENDPOINT' }, 400);
+  const count = await env.DB.prepare('SELECT COUNT(*) AS n FROM push_subscriptions WHERE customer_id=?')
+    .bind(customer.id).first();
+  const prior = await env.DB.prepare('SELECT id,customer_id FROM push_subscriptions WHERE endpoint=?').bind(endpoint).first();
+  if (!prior && count.n >= 5) return json({ error: 'DEVICE_LIMIT' }, 429);
+  if (prior && prior.customer_id !== customer.id) return json({ error: 'SUBSCRIPTION_ALREADY_LINKED' }, 409);
+  if (!prior) await env.DB.prepare('INSERT INTO push_subscriptions (id,customer_id,endpoint,created_at,expires_at) VALUES (?,?,?,?,?)')
+    .bind(crypto.randomUUID(), customer.id, endpoint, now(), customer.expires_at).run();
+  return json({ subscribed: true });
+}
+async function scheduleReturn(request, env, id) {
+  const customer = await currentCustomer(request, env);
+  const session = await getSession(env.DB, id);
+  if (!customer || !session || session.customer_id !== customer.id) return json({ error: 'NOT_FOUND' }, 404);
+  const input = await bodyJson(request);
+  if (!Number.isInteger(input.minutes) || input.minutes < 1 || input.minutes > 120)
+    return json({ error: 'INVALID_REMINDER_TIME' }, 400);
+  const subscription = await env.DB.prepare('SELECT id FROM push_subscriptions WHERE customer_id=? LIMIT 1')
+    .bind(customer.id).first();
+  if (!subscription) return json({ error: 'NOT_SUBSCRIBED' }, 409);
+  const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM return_reminders WHERE customer_id=? AND status IN ('pending','sending')")
+    .bind(customer.id).first();
+  if (count.n >= 3) return json({ error: 'REMINDER_LIMIT' }, 429);
+  const idReminder = crypto.randomUUID(), at = now(), due = new Date(Date.now() + input.minutes * 60_000).toISOString();
+  await env.DB.prepare("INSERT INTO return_reminders (id,customer_id,session_id,created_at,due_at,status) VALUES (?,?,?,?,?,'pending')")
+    .bind(idReminder, customer.id, id, at, due).run();
+  await event(env.DB, id, null, session.revision, 'return_reminder_scheduled',
+    { reminder_id: idReminder, due_at: due, mechanism: 'web_push' });
+  return json({ reminderId: idReminder, dueAt: due, mechanism: 'web_push' }, 201);
+}
+async function pendingPush(request, env) {
+  const customer = await currentCustomer(request, env);
+  if (!customer) return json({ error: 'NOT_FOUND' }, 404);
+  const reminder = await env.DB.prepare(`SELECT id,session_id,due_at FROM return_reminders
+    WHERE customer_id=? AND status IN ('sending','push_accepted') AND displayed_at IS NULL
+    ORDER BY due_at,id LIMIT 1`).bind(customer.id).first();
+  return json({ reminder: reminder ? { id: reminder.id, sessionId: reminder.session_id, dueAt: reminder.due_at } : null });
+}
+async function ackPush(request, env) {
+  const customer = await currentCustomer(request, env);
+  if (!customer) return json({ error: 'NOT_FOUND' }, 404);
+  const input = await bodyJson(request);
+  if (!/^[0-9a-f-]{36}$/i.test(input.reminderId ?? '') || !['displayed','clicked'].includes(input.kind))
+    return json({ error: 'INVALID_ACK' }, 400);
+  const field = input.kind === 'displayed' ? 'displayed_at' : 'clicked_at';
+  const changed = await env.DB.prepare(`UPDATE return_reminders SET ${field}=COALESCE(${field},?)
+    WHERE id=? AND customer_id=? AND status IN ('sending','push_accepted')`)
+    .bind(now(), input.reminderId, customer.id).run();
+  return changed.meta.changes ? json({ accepted: true }) : json({ error: 'NOT_FOUND' }, 404);
+}
+async function vapidHeader(env, endpoint) {
+  const origin = new URL(endpoint).origin;
+  const timestamp = Math.floor(Date.now() / 1000);
+  const head = b64url(encoder.encode(JSON.stringify({ typ: 'JWT', alg: 'ES256' })));
+  const payload = b64url(encoder.encode(JSON.stringify({ aud: origin, exp: timestamp + 12 * 3600, sub: env.VAPID_SUBJECT })));
+  const key = await crypto.subtle.importKey('jwk', JSON.parse(env.VAPID_PRIVATE_JWK),
+    { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
+  const signed = new Uint8Array(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key,
+    encoder.encode(`${head}.${payload}`)));
+  return `vapid t=${head}.${payload}.${b64url(signed)}, k=${env.VAPID_PUBLIC_KEY}`;
+}
+async function dispatchReturns(env) {
+  if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_JWK || !env.VAPID_SUBJECT) return;
+  const at = now();
+  const abandonedBefore = new Date(Date.now() - 5 * 60_000).toISOString();
+  const due = await env.DB.prepare(`SELECT id,customer_id,session_id FROM return_reminders
+    WHERE ((status='pending' AND due_at<=?) OR (status='sending' AND due_at<=?))
+    AND attempt_count<3 ORDER BY due_at LIMIT 10`).bind(at, abandonedBefore).all();
+  for (const reminder of due.results ?? []) {
+    const claimed = await env.DB.prepare(`UPDATE return_reminders SET status='sending',attempt_count=attempt_count+1
+      WHERE id=? AND ((status='pending' AND due_at<=?) OR (status='sending' AND due_at<=?))
+      AND attempt_count<3`).bind(reminder.id, at, abandonedBefore).run();
+    if (claimed.meta.changes !== 1) continue;
+    const subscriptions = await env.DB.prepare('SELECT id,endpoint FROM push_subscriptions WHERE customer_id=? AND expires_at>?')
+      .bind(reminder.customer_id, at).all();
+    let accepted = 0, lastError = null;
+    for (const subscription of subscriptions.results ?? []) {
+      try {
+        const result = await fetch(subscription.endpoint, { method: 'POST',
+          headers: { Authorization: await vapidHeader(env, subscription.endpoint), TTL: '300', Urgency: 'normal' } });
+        if (result.status === 201 || result.status === 202) accepted++;
+        else if (result.status === 404 || result.status === 410) {
+          await env.DB.prepare('DELETE FROM push_subscriptions WHERE id=?').bind(subscription.id).run();
+          lastError = `PUSH_${result.status}`;
+        } else lastError = `PUSH_${result.status}`;
+      } catch { lastError = 'PUSH_NETWORK_ERROR'; }
+    }
+    const outcome = accepted ? 'push_accepted' : subscriptions.results?.length ? 'pending' : 'no_subscription';
+    await env.DB.prepare('UPDATE return_reminders SET status=?,push_accepted_at=?,error_code=? WHERE id=? AND status=\'sending\'')
+      .bind(outcome, accepted ? now() : null, lastError, reminder.id).run();
+    const session = await getSession(env.DB, reminder.session_id);
+    if (session) await event(env.DB, reminder.session_id, null, session.revision,
+      'return_push_attempt', { reminder_id: reminder.id, accepted_by_push_service: accepted,
+        status: outcome, error_code: lastError });
+  }
 }
 
 async function streamTurn(request, env, ctx, id) {
@@ -226,23 +795,38 @@ async function streamTurn(request, env, ctx, id) {
   const input = await bodyJson(request);
   const accepted = await acceptTurn(env, id, input);
   if (accepted.response) return accepted.response;
-  const { session, turnId, revision, messages } = accepted;
+  const { session, imageIds, turnId, revision, messages } = accepted;
   const model = env.MODEL || 'gpt-6-astra';
   const effort = env.REASONING_EFFORT || 'medium';
   const contextText = session.customer_context || 'No saved customer facts provided yet.';
   const behavior = behaviorFor(env, contextText);
-  const prompt = behavior.instructions;
+  const meal = isStage1b(env) && session.meal_source_turn_id
+    ? await env.DB.prepare("SELECT text FROM turns WHERE id=? AND session_id=? AND role='assistant'")
+      .bind(session.meal_source_turn_id, id).first() : null;
+  const imageAddendum = imageIds.length > 0;
+  const prompt = behavior.instructions + (meal
+    ? `\n\nAccepted meal reference (revision ${session.meal_revision}): The customer explicitly saved this prior Snap reply as the active meal. It is a chosen plan, not evidence that any cooking step occurred.\n${meal.text.slice(0, 4000)}`
+    : '') + (imageAddendum
+    ? '\n\nFor a food photo, distinguish visible details from likely interpretation. Ask when a hidden ingredient or preparation choice changes the reconstruction. A photo cannot prove allergens or exact ingredients. Continue the same open culinary conversation.'
+    : '');
   const callId = crypto.randomUUID();
+  if (!await claimTurnOperation(env, id, turnId, revision, callId)) {
+    const outcome = await turnResult(env, id, turnId);
+    return json(outcome, outcome.status === 'pending' ? 202 : 200);
+  }
   const requestedAt = now();
   await env.DB.prepare(`INSERT INTO model_calls
     (id,session_id,user_turn_id,revision,requested_at,status,requested_model,behavior_version,context_version,
-     reasoning_effort,customer_context_snapshot,memory_retrieved,tool_calls_json)
-     VALUES (?,?,?,?,?,'pending',?,?,?,?,?,?,?)`)
-    .bind(callId, id, turnId, revision, requestedAt, model, behavior.version, CONTEXT_VERSION,
-      effort, session.customer_context, 'none — no memory store in Stage 1A', '[]').run();
+     reasoning_effort,customer_context_snapshot,memory_retrieved,tool_calls_json,image_ids_json,
+     accepted_meal_snapshot,accepted_meal_revision)
+     VALUES (?,?,?,?,?,'pending',?,?,?,?,?,?,?,?,?,?)`)
+    .bind(callId, id, turnId, revision, requestedAt, model,
+      imageAddendum ? `${behavior.version}+image-v1` : behavior.version,
+      isStage1b(env) ? 'stage1b-context-v1' : CONTEXT_VERSION,
+      effort, session.customer_context, 'none — no memory store in Stage 1B', '[]',
+      JSON.stringify(imageIds), meal?.text.slice(0, 4000) ?? null,
+      meal ? session.meal_revision : null).run();
 
-  const abort = new AbortController();
-  let canceled = false;
   const stream = new ReadableStream({
     start(controller) {
       const task = (async () => {
@@ -257,7 +841,6 @@ async function streamTurn(request, env, ctx, id) {
               headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
               body: JSON.stringify({ model, instructions: prompt, input: messages, reasoning: { effort },
                 max_output_tokens: 4096, store: false, stream: true }),
-              signal: abort.signal,
             });
             if (provider.ok) break;
             if (![429, 500, 502, 503, 504].includes(provider.status) || attempt === 2)
@@ -306,27 +889,50 @@ async function streamTurn(request, env, ctx, id) {
             ? estimateUsd(completed.model ?? model, inputTokens, cached, outputTokens) : null;
           const assistantId = crypto.randomUUID();
           const assistantAt = now();
-          const write = await env.DB.prepare(`INSERT INTO turns (id,session_id,revision,role,text,created_at,model_call_id)
-            SELECT ?,id,?,'assistant',?,?,? FROM sessions WHERE id=? AND revision=?`)
-            .bind(assistantId, revision, text, assistantAt, callId, id, revision).run();
-          const wasAccepted = write.meta.changes === 1;
-          await env.DB.prepare(`UPDATE model_calls SET completed_at=?,status=?,response_model=?,provider_response_id=?,
+          const write = await env.DB.batch([
+            env.DB.prepare(`INSERT INTO turns (id,session_id,revision,role,text,created_at,model_call_id)
+              SELECT ?,s.id,?,'assistant',?,?,? FROM sessions s JOIN turn_operations o
+              ON o.session_id=s.id AND o.user_turn_id=? WHERE s.id=? AND s.revision=?
+              AND o.current_call_id=? AND o.status='pending'
+              AND NOT EXISTS (SELECT 1 FROM turns t WHERE t.session_id=s.id AND t.revision=? AND t.role='assistant')`)
+              .bind(assistantId, revision, text, assistantAt, callId, turnId, id, revision, callId, revision),
+            env.DB.prepare(`UPDATE model_calls SET completed_at=?,
+            status=CASE WHEN EXISTS (SELECT 1 FROM turns WHERE model_call_id=?) THEN 'accepted' ELSE 'stale_rejected' END,
+            response_model=?,provider_response_id=?,
             first_text_ms=?,first_useful_ms=?,first_useful_excerpt=?,full_ms=?,input_tokens=?,cached_input_tokens=?,output_tokens=?,
             reasoning_tokens=?,estimated_usd=?,retry_count=?,assistant_text=? WHERE id=?`)
-            .bind(assistantAt, wasAccepted ? 'accepted' : 'stale_rejected', completed.model ?? model,
+              .bind(assistantAt, callId, completed.model ?? model,
               completed.id ?? null, firstTextMs, firstUsefulMs, firstUsefulExcerpt, fullMs, inputTokens, cached, outputTokens,
-              reasoning, cost, retryCount, text, callId).run();
-          await event(env.DB, id, turnId, revision, wasAccepted ? 'assistant_turn_accepted' : 'stale_result_rejected',
-            { model_call_id: callId, assistant_turn_id: wasAccepted ? assistantId : null });
+              reasoning, cost, retryCount, text, callId),
+            env.DB.prepare(`UPDATE turn_operations SET
+              status=CASE WHEN EXISTS (SELECT 1 FROM turns WHERE model_call_id=?) THEN 'accepted' ELSE 'stale_rejected' END,
+              updated_at=? WHERE user_turn_id=? AND current_call_id=?`)
+              .bind(callId, assistantAt, turnId, callId),
+            env.DB.prepare(`INSERT INTO state_events (id,session_id,turn_id,revision,kind,at,details_json)
+              SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM turns WHERE model_call_id=?)`)
+              .bind(crypto.randomUUID(), id, turnId, revision, 'assistant_turn_accepted', assistantAt,
+                JSON.stringify({ model_call_id: callId, assistant_turn_id: assistantId }), callId),
+            env.DB.prepare(`INSERT INTO state_events (id,session_id,turn_id,revision,kind,at,details_json)
+              SELECT ?,?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM turns WHERE model_call_id=?)`)
+              .bind(crypto.randomUUID(), id, turnId, revision, 'stale_result_rejected', assistantAt,
+                JSON.stringify({ model_call_id: callId, assistant_turn_id: null }), callId),
+          ]);
+          const wasAccepted = write[0].meta.changes === 1;
           sendSse(controller, { type: wasAccepted ? 'complete' : 'stale', turnId, revision,
             firstTextMs, firstUsefulMs, fullMs });
         } catch (error) {
-          const code = canceled ? 'CLIENT_DISCONNECTED' : error instanceof Error && /^[A-Z_0-9]+$/.test(error.message)
+          const code = error instanceof Error && /^[A-Z_0-9]+$/.test(error.message)
             ? error.message : 'MODEL_ERROR';
-          await env.DB.prepare(`UPDATE model_calls SET completed_at=?,status='error',first_text_ms=?,
+          await env.DB.batch([
+            env.DB.prepare(`UPDATE model_calls SET completed_at=?,status='error',first_text_ms=?,
             first_useful_ms=?,first_useful_excerpt=?,full_ms=?,retry_count=?,error_code=?,assistant_text=? WHERE id=?`)
-            .bind(now(), firstTextMs, firstUsefulMs, firstUsefulExcerpt, Math.round(performance.now() - started), retryCount, code, text, callId).run();
-          await event(env.DB, id, turnId, revision, 'model_call_failed', { model_call_id: callId, code });
+              .bind(now(), firstTextMs, firstUsefulMs, firstUsefulExcerpt, Math.round(performance.now() - started), retryCount, code, text, callId),
+            env.DB.prepare("UPDATE turn_operations SET status='error',updated_at=? WHERE user_turn_id=? AND current_call_id=?")
+              .bind(now(), turnId, callId),
+            env.DB.prepare('INSERT INTO state_events (id,session_id,turn_id,revision,kind,at,details_json) VALUES (?,?,?,?,?,?,?)')
+              .bind(crypto.randomUUID(), id, turnId, revision, 'model_call_failed', now(),
+                JSON.stringify({ model_call_id: callId, code })),
+          ]);
           sendSse(controller, { type: 'error', code });
         } finally {
           try { controller.close(); } catch { /* Disconnected browser. */ }
@@ -334,7 +940,7 @@ async function streamTurn(request, env, ctx, id) {
       })();
       ctx.waitUntil(task);
     },
-    cancel() { canceled = true; abort.abort(); },
+    cancel() { /* The accepted request continues; reconnecting clients read its recorded result. */ },
   });
   return new Response(stream, { headers: { ...BASE_HEADERS, 'Content-Type': 'text/event-stream; charset=utf-8',
     'Connection': 'keep-alive' } });
@@ -343,18 +949,19 @@ async function streamTurn(request, env, ctx, id) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (url.pathname === '/health') return json({ status: 'ok', stage: '1A-live-lab', model: env.MODEL || 'gpt-6-astra',
-      behavior_version: env.BEHAVIOR_VERSION || BEHAVIOR_VERSION, context_version: CONTEXT_VERSION, scenario_version: SCENARIO_VERSION });
+    if (url.pathname === '/health') return json({ status: 'ok', stage: isStage1b(env) ? '1B-staging' : '1A-live-lab', model: env.MODEL || 'gpt-6-astra',
+      behavior_version: env.BEHAVIOR_VERSION || BEHAVIOR_VERSION,
+      context_version: isStage1b(env) ? 'stage1b-context-v1' : CONTEXT_VERSION, scenario_version: SCENARIO_VERSION });
     if (!env.DB || !env.LAB_ACCESS_CODE || !env.COOKIE_SIGNING_KEY) return json({ error: 'LAB_NOT_CONFIGURED' }, 503);
     if (request.method !== 'GET' && !sameOrigin(request)) return json({ error: 'ORIGIN_REQUIRED' }, 403);
-    if (url.pathname === '/' && request.method === 'GET') return html('chat');
+    if (url.pathname === '/' && request.method === 'GET') return html('chat', env);
     if (url.pathname === '/api/review/login' && request.method === 'POST') {
       const input = await bodyJson(request);
       if (!equal(String(input.code ?? ''), env.LAB_ACCESS_CODE)) return json({ error: 'UNAUTHORIZED' }, 401);
       return json({ ok: true }, 200, { 'Set-Cookie': `${REVIEW_COOKIE}=${await makeReviewCookie(env.COOKIE_SIGNING_KEY)}; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=Strict` });
     }
     if (url.pathname === '/review' && request.method === 'GET')
-      return html(await authorizedReview(request, env.COOKIE_SIGNING_KEY) ? 'review' : 'login');
+      return html(await authorizedReview(request, env.COOKIE_SIGNING_KEY) ? 'review' : 'login', env);
     if (url.pathname === '/api/review/logout' && request.method === 'POST')
       return json({ ok: true }, 200, { 'Set-Cookie': `${REVIEW_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict` });
     if (url.pathname.startsWith('/api/review/')) {
@@ -364,26 +971,83 @@ export default {
       if (review && request.method === 'GET') return reviewSession(env, review[1]);
       return json({ error: 'NOT_FOUND' }, 404);
     }
+    if (isStage1b(env)) {
+      if (url.pathname === '/api/pair/start' && request.method === 'POST') return startPair(request, env);
+      if (url.pathname === '/api/pair/claim' && request.method === 'POST') return claimPair(request, env);
+      if (url.pathname === '/api/customer/sessions' && request.method === 'GET') return customerSessions(request, env);
+      if (url.pathname === '/sw.js' && request.method === 'GET')
+        return new Response(serviceWorker, { headers: { ...BASE_HEADERS,
+          'Content-Type': 'text/javascript; charset=utf-8', 'Service-Worker-Allowed': '/' } });
+      if (url.pathname === '/api/push/config' && request.method === 'GET')
+        return env.VAPID_PUBLIC_KEY ? json({ publicKey: env.VAPID_PUBLIC_KEY }) : json({ error: 'PUSH_UNAVAILABLE' }, 503);
+      if (url.pathname === '/api/push/subscribe' && request.method === 'POST') return subscribePush(request, env);
+      if (url.pathname === '/api/push/pending' && request.method === 'GET') return pendingPush(request, env);
+      if (url.pathname === '/api/push/ack' && request.method === 'POST') return ackPush(request, env);
+    }
     if (url.pathname === '/api/sessions' && request.method === 'POST') return createSession(request, env);
     const session = url.pathname.match(/^\/api\/sessions\/([0-9a-f-]{36})$/i);
     if (session && request.method === 'GET')
-      return await authorizedSession(request, env.COOKIE_SIGNING_KEY, session[1]) ? showSession(env, session[1]) : json({ error: 'NOT_FOUND' }, 404);
+      return await canUseSession(request, env, session[1]) ? showSession(env, session[1]) : json({ error: 'NOT_FOUND' }, 404);
+    const images = url.pathname.match(/^\/api\/sessions\/([0-9a-f-]{36})\/images$/i);
+    if (isStage1b(env) && images && request.method === 'POST')
+      return await canUseSession(request, env, images[1]) ? uploadImage(request, env, images[1]) : json({ error: 'NOT_FOUND' }, 404);
+    const image = url.pathname.match(/^\/api\/sessions\/([0-9a-f-]{36})\/images\/([0-9a-f-]{36})$/i);
+    if (isStage1b(env) && image && request.method === 'GET')
+      return await canUseSession(request, env, image[1]) || await authorizedReview(request, env.COOKIE_SIGNING_KEY)
+        ? showImage(env, image[1], image[2]) : json({ error: 'NOT_FOUND' }, 404);
+    const voiceStart = url.pathname.match(/^\/api\/sessions\/([0-9a-f-]{36})\/voice\/start$/i);
+    if (isStage1b(env) && voiceStart && request.method === 'POST')
+      return await canUseSession(request, env, voiceStart[1]) ? startVoice(request, env, voiceStart[1]) : json({ error: 'NOT_FOUND' }, 404);
+    const voiceEvents = url.pathname.match(/^\/api\/sessions\/([0-9a-f-]{36})\/voice\/events$/i);
+    if (isStage1b(env) && voiceEvents && request.method === 'POST')
+      return await canUseSession(request, env, voiceEvents[1]) ? voiceEvent(request, env, voiceEvents[1]) : json({ error: 'NOT_FOUND' }, 404);
+    const voiceStop = url.pathname.match(/^\/api\/sessions\/([0-9a-f-]{36})\/voice\/stop$/i);
+    if (isStage1b(env) && voiceStop && request.method === 'POST')
+      return await canUseSession(request, env, voiceStop[1]) ? stopVoice(request, env, voiceStop[1]) : json({ error: 'NOT_FOUND' }, 404);
+    const reminder = url.pathname.match(/^\/api\/sessions\/([0-9a-f-]{36})\/return$/i);
+    if (isStage1b(env) && reminder && request.method === 'POST')
+      return await canUseSession(request, env, reminder[1]) ? scheduleReturn(request, env, reminder[1]) : json({ error: 'NOT_FOUND' }, 404);
     const turn = url.pathname.match(/^\/api\/sessions\/([0-9a-f-]{36})\/turns$/i);
     if (turn && request.method === 'POST')
-      return await authorizedSession(request, env.COOKIE_SIGNING_KEY, turn[1]) ? streamTurn(request, env, ctx, turn[1]) : json({ error: 'NOT_FOUND' }, 404);
+      return await canUseSession(request, env, turn[1]) ? streamTurn(request, env, ctx, turn[1]) : json({ error: 'NOT_FOUND' }, 404);
+    const turnStatus = url.pathname.match(/^\/api\/sessions\/([0-9a-f-]{36})\/turns\/([0-9a-f-]{36})$/i);
+    if (turnStatus && request.method === 'GET')
+      return await canUseSession(request, env, turnStatus[1])
+        ? json(await turnResult(env, turnStatus[1], turnStatus[2])) : json({ error: 'NOT_FOUND' }, 404);
+    const meal = url.pathname.match(/^\/api\/sessions\/([0-9a-f-]{36})\/meal$/i);
+    if (isStage1b(env) && meal && request.method === 'POST')
+      return await canUseSession(request, env, meal[1]) ? acceptMeal(request, env, meal[1]) : json({ error: 'NOT_FOUND' }, 404);
     const feedback = url.pathname.match(/^\/api\/sessions\/([0-9a-f-]{36})\/turns\/([0-9a-f-]{36})\/feedback$/i);
     if (feedback && request.method === 'POST')
-      return await authorizedSession(request, env.COOKIE_SIGNING_KEY, feedback[1])
+      return await canUseSession(request, env, feedback[1])
         ? recordFeedback(request, env, feedback[1], feedback[2]) : json({ error: 'NOT_FOUND' }, 404);
     return json({ error: 'NOT_FOUND' }, 404);
   },
   async scheduled(_event, env) {
+    if (isStage1b(env)) await dispatchReturns(env);
     const at = now();
+    if (isStage1b(env) && env.IMAGES) {
+      const expired = await env.DB.prepare('SELECT id,session_id FROM images WHERE expires_at<=?')
+        .bind(at).all();
+      for (const image of expired.results ?? []) await env.IMAGES.delete(`${image.session_id}/${image.id}`);
+    }
+    const stage1bExpiry = isStage1b(env) ? [
+      env.DB.prepare('DELETE FROM voice_assistant_items WHERE voice_session_id IN (SELECT id FROM voice_sessions WHERE session_id IN (SELECT id FROM sessions WHERE expires_at<=?))').bind(at),
+      env.DB.prepare('DELETE FROM voice_user_items WHERE voice_session_id IN (SELECT id FROM voice_sessions WHERE session_id IN (SELECT id FROM sessions WHERE expires_at<=?))').bind(at),
+      env.DB.prepare('DELETE FROM voice_sessions WHERE session_id IN (SELECT id FROM sessions WHERE expires_at<=?)').bind(at),
+      env.DB.prepare('DELETE FROM return_reminders WHERE session_id IN (SELECT id FROM sessions WHERE expires_at<=?)').bind(at),
+      env.DB.prepare('DELETE FROM push_subscriptions WHERE expires_at<=?').bind(at),
+    ] : [];
     await env.DB.batch([
+      ...stage1bExpiry,
       env.DB.prepare('DELETE FROM model_calls WHERE session_id IN (SELECT id FROM sessions WHERE expires_at<=?)').bind(at),
       env.DB.prepare('DELETE FROM turns WHERE session_id IN (SELECT id FROM sessions WHERE expires_at<=?)').bind(at),
       env.DB.prepare('DELETE FROM state_events WHERE session_id IN (SELECT id FROM sessions WHERE expires_at<=?)').bind(at),
+      env.DB.prepare('DELETE FROM turn_operations WHERE session_id IN (SELECT id FROM sessions WHERE expires_at<=?)').bind(at),
+      env.DB.prepare('DELETE FROM pairing_links WHERE expires_at<=? OR session_id IN (SELECT id FROM sessions WHERE expires_at<=?)').bind(at, at),
+      env.DB.prepare('DELETE FROM images WHERE expires_at<=?').bind(at),
       env.DB.prepare('DELETE FROM sessions WHERE expires_at<=?').bind(at),
+      env.DB.prepare('DELETE FROM customers WHERE expires_at<=?').bind(at),
     ]);
   },
 };

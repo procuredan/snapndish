@@ -135,6 +135,15 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 - **Rollback / recovery:** Roll back the Worker to the verified prior v1 deployment version if behavior or security regresses; feedback events remain in D1 under the existing 30-day retention. No schema or destructive data change occurs. If the Worker must close, use the recorded closed version from the Live Lab runbook.
 - **Supersedes:** `SNDISH-013` only for its requirement to wait for exhaustive owner blind scoring and its no-deployment pause. The offline evidence and Stage 1B prohibition remain in force.
 
+### SNDISH-015 — Stage 1B capability proofs authorized
+
+- **Date / owner:** 2026-09-29; Snap n Dish product owner, via explicit Stage 1B Engineering GO.
+- **Decision:** Proceed with five incremental capability proofs: real spoken Talk It with visible transcript, real image input, durable/current conversation, phone-to-computer-to-phone continuation, and one closed-app return. All use the same v2 culinary core and application-owned state. Add only minimum identity and maintain diagnostic telemetry and Good / Missed It. Preserve the Stage 1A Live Lab and culinary comparisons.
+- **Reason:** Stage 1A supplied enough evidence to test whether the culinary relationship survives modalities, persistence and return over time. The architectural rule is “Sophisticated around the brain. Simple through the brain.”
+- **Excluded alternative:** Intent classifier, rigid conversational state machine, recipe retrieval, cuisine taxonomy, chef agents, mandatory discovery schema, vector memory or extra synchronous AI calls without demonstrated need and PM authorization. Grocery fulfillment, full commercial memory, advanced orchestration, native apps, exact pantry inventory, Procure profile integration and commercial alpha remain out of scope.
+- **Depends / reconsider:** Follow staging-first release gates, evaluate culinary quality and reliability after each capability, and stop for PM review when all five proofs are complete. This decision authorizes engineering and staging proof work; each production deployment still requires explicit owner authorization under `SNDISH-008` and the global rules.
+- **Supersedes:** The Stage 1B prohibition in `SNDISH-007`, `SNDISH-010` through `SNDISH-014`, and stale current-scope text in subordinate documents. The Stage 1A evidence and Live Lab release record remain intact.
+
 ## Open decisions — no authority may be invented
 
 1. Stage 1A quality result and owner benchmark/human review; the current prototype tests are not that decision.

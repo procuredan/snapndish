@@ -1,9 +1,9 @@
 # Snap n Dish — current architecture and authority register
 
-**Reconciled:** 2026-09-29. **Status:** Stage 1A v2 controlled evaluation and direct-entry Live Lab verified at `app.snapndish.com`.
+**Reconciled:** 2026-09-29. **Status:** Stage 1A v2 Live Lab verified; Stage 1B capability experiments authorized and under local verification.
 **Governance:** [SNAP_GLOBAL_RULES.md](SNAP_GLOBAL_RULES.md). **Decisions:** [SNAP_DECISION_LOG.md](SNAP_DECISION_LOG.md).
 
-This document describes what exists and marks future product boundaries separately. The owner has authorized direct chat entry for the Stage 1A Live Lab at `app.snapndish.com` while retaining private owner review. That authorization does not include Stage 1B or a broader production build. Code and observed runtime remain implementation evidence; an old plan is not proof of current behavior.
+This document describes what exists and marks future product boundaries separately. The owner has authorized direct chat entry for the Stage 1A Live Lab at `app.snapndish.com` while retaining private owner review. SNDISH-015 authorizes five Stage 1B proofs on separate staging resources; it does not authorize a broader production build or production deployment. Code and observed runtime remain implementation evidence; an old plan is not proof of current behavior.
 
 ## Evidence convention
 
@@ -17,7 +17,7 @@ This document describes what exists and marks future product boundaries separate
 
 **VERIFIED:** The offline `stage1a-snap-v2` behavior comparison is in `src/behavior-v2-eval.ts` and `evaluation/behavior-v2-cases.json`. The original 75-turn Foundation A / C v1 / C v2 run, blind owner sheet, option mapping, stream deltas, cost estimate, and technical summary remain unchanged in ignored `runs/stage1a-v2-2026-09-29/`. A separate predeploy 75-turn run in ignored `runs/stage1a-v2-predeploy-2026-09-29/` completed with no errors or retries. The owner approved live usage as the primary quality discovery mechanism without requiring exhaustive blind scoring. The v1 prompt and Worker version remain available for rollback. Browser-rendered decision-useful timing remains **NOT VERIFIED** as a semantic metric; the existing first-useful measure is a server-side text-prefix proxy. Manually labeled provider-stream prefixes are separate non-rendered evidence.
 
-**VERIFIED ABSENT FROM THE PRODUCT:** There is no React application, R2/Queue binding, account system, image upload, realtime voice, persistent customer profile, meal/cooking state, or notification transport. The Live Lab Worker adds only private text sessions and a conversation revision; these are evaluation records, not evidence of the full product architecture.
+**VERIFIED ABSENT FROM THE STAGE 1A LIVE LAB:** There is no React application, R2/Queue binding, account system, image upload, realtime voice, persistent customer profile, meal/cooking state, or notification transport. Its Worker adds only private text sessions and a conversation revision. Stage 1B experiments are isolated from this deployed surface.
 
 ## Authority register
 
@@ -31,11 +31,17 @@ This document describes what exists and marks future product boundaries separate
 | Per-arm conversation | VERIFIED code | `src/cli.ts` in-process arrays | Isolated experimental histories; process exit ends them. |
 | Run output and metrics | VERIFIED code and local live metrics | `src/cli.ts`, `src/report.ts`, `src/behavior-v2-eval.ts`, ignored `runs/` | Partial results persist locally; estimated price is not a bill or a quality rating. |
 | Human culinary evaluation | Blind material retained; owner outcome NOT VERIFIED | `evaluation/protocol.md`, generated blind sheet, Live Lab feedback | Owner live use is the primary quality discovery. Good / Missed It is a per-turn signal, not a full score. |
-| Identity and parent profile | NOT IMPLEMENTED | Future product decision | Procure profile integration boundary is planned, not currently connected. |
-| Meal/progress/forecast authority | NOT IMPLEMENTED | Future Snap n Dish backend | Must be server-owned and independently versioned when authorized. |
-| Cross-device and three modalities | NOT IMPLEMENTED | Future account/conversation APIs and clients | Snap It/Write It/Talk It must converge; no current client demonstrates this. |
+| Identity and parent profile | Stage 1B minimal anonymous device link in local code; parent profile NOT IMPLEMENTED | Stage 1B Worker/D1; future parent-profile decision | One-use pair link is an experiment, not permanent identity or Procure integration. |
+| Meal/progress/forecast authority | Stage 1B accepted meal revision in local code; cooking progress and forecast NOT IMPLEMENTED | Stage 1B Worker/D1; future product backend | Saving a meal requires an explicit customer action; it does not prove cooking occurred. |
+| Cross-device and three modalities | Stage 1B local code and partial local proof; target-device journey NOT VERIFIED | Shared Worker conversation/revision, image R2, Realtime voice transcript | Same account/conversation/state on real phone → computer/tablet → phone requires staging test. |
 | Stage 1A Live Lab | VERIFIED v2 in staging and live | `live-lab/`, `wrangler.*.jsonc` | Arm C streaming text with versioned v2 behavior, direct visitor chat, one-tap feedback, protected owner review, D1 conversation and telemetry, no product account or meal state. |
 | Release environments | VERIFIED for Stage 1A only | `wrangler.staging.jsonc`, `wrangler.live.jsonc` | Separate Snap n Dish resources and verified custom domain. |
+
+## Stage 1B experimental extension
+
+**VERIFIED locally in code and focused tests:** The Stage 1B feature flag adds a server-owned customer cookie, one-use pairing link, accepted meal revision, private food-image upload, realtime WebRTC session proxy, visible transcript acceptance, and a permissioned Web Push reminder. The text response still uses one streamed Responses call with the v2 culinary behavior and current conversation. Image evidence enters that same call. Voice uses the Realtime model with the same behavior instructions, customer context, accepted meal snapshot and prior turns; the application accepts transcript turns against the current revision. Complete text/model evidence and accepted state are distinct. No raw voice audio is durably retained. Image bytes are metadata-stripped and stored in an isolated private R2 bucket with session-bound access. The text, image, voice, device and reminder paths have focused local tests; a real target-device voice call and closed-browser notification remain **NOT VERIFIED** until staging tests.
+
+**Not built:** grocery fulfillment, full memory, cooking orchestration, Procure profile integration, native apps, exact pantry inventory, recipe retrieval, classifier, taxonomy or multi-agent culinary system. Stage 1B data expires under the experimental retention policy; this is not a commercial identity or data-governance design.
 
 ## Current data and execution flow
 
@@ -72,7 +78,7 @@ The repository has a verification-only GitHub Actions workflow. A GitHub commit/
 - **NOT VERIFIED:** Whether the selected foundation model and Snap instructions preserve the inspired culinary experience to the owner's standard. Live A/B/C outputs exist; blind owner judgment is pending.
 - **NOT VERIFIED:** Owner reference conversations, blinded human ratings, actual cooking validation, acceptable quality threshold, and full-session economics/latency threshold.
 - **NOT DECIDED:** Identity provider, Procure parent-profile consent and data-sharing contract, sensitive-context retention/deletion executor, and vendor data controls for production.
-- **NOT DECIDED:** Broader production rollout/rollback mechanism, realtime voice provider and transcript reconciliation, and cross-device synchronization contract. Stage 1A Live Lab resources and rollback are specific to this controlled test.
-- **NOT DECIDED:** Notification channels and permission model; they are not Stage 1A work.
+- **NOT DECIDED:** Broader production rollout/rollback mechanism and production identity, voice and cross-device contracts. Stage 1B tests Realtime voice and one-use pair links; their commercial design remains undecided.
+- **NOT DECIDED:** Product notification channels and permission model. Stage 1B tests one permissioned Web Push return only.
 
-The Stage 1A CLI intentionally lacks product-owned durable state. The Live Lab adds only session and transcript authority for controlled testing. Neither demonstrates the final meal, cooking, memory, voice, photo, or cross-device system. Stage 1B still requires separate owner authorization.
+The Stage 1A CLI intentionally lacks product-owned durable state. The Live Lab adds only session and transcript authority for controlled testing. Stage 1B adds bounded capability experiments under SNDISH-015. None demonstrates the final commercial meal, cooking, memory, identity or notification system.

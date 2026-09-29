@@ -32,7 +32,7 @@ A change is material when it affects AI behavior (prompt, model, parameters, con
 14. **AI behavior is versioned and tested code.** Pin or record model, prompt/behavior, context, schema, tool, and material parameter versions. Stage and evaluate changes before customer rollout. A model may propose a meal and guidance, but cannot claim a timer was started, an ingredient was verified, a step was completed, or a durable mutation succeeded until the authoritative operation confirms it. Learned preferences are editable and cannot silently override current explicit input.
 15. **Keep the product simple.** Use the strongest capable foundation model while testing quality and economics. Do not build a recipe engine, ontology, vector layer, profile microservice, multiple chef agents, or orchestration state machine merely because it can be built. Add machinery only for demonstrated product need or an authority, safety, privacy, or integrity boundary.
 16. **Staging first; production by explicit authorization.** A GitHub push changes source history; it is not a Cloudflare deployment. CI verifies and never deploys. Material runtime changes go to isolated Snap n Dish staging first, with risky external effects off, known code rollback and data recovery, rendered journey checks, and post-deploy verification. Every production deployment requires explicit owner authorization for that deployment, even after CI and staging pass. Do not copy Snap n Done resource IDs, routes, secrets, or gates.
-17. **Stay in the product boundary.** Do not mutate Snap n Done, Procure, Walter, Clink Pass, or shared accounts/resources without a separately authorized task. Their marketplace policies have no Snap n Dish authority. Stage 1B and production build remain outside current authorization.
+17. **Stay in the product boundary.** Do not mutate Snap n Done, Procure, Walter, Clink Pass, or shared accounts/resources without a separately authorized task. Their marketplace policies have no Snap n Dish authority. Stage 1B capability proofs are authorized under SNDISH-015; commercial-alpha and production deployment remain outside current authorization.
 
 ## Required work record
 
@@ -51,4 +51,4 @@ At completion report: files and behavior versions changed; what was **VERIFIED**
 7. Obtain explicit owner authorization for production deployment.
 8. Deploy the exact reviewed artifact, verify production health **and** critical customer journeys, and record rollback status.
 
-Current Stage 1A is a private local evaluation with no Cloudflare resources or production release. Its results must be observed and reviewed before the stage can be diagnosed.
+Stage 1A evidence includes the preserved local evaluation and deployed Live Lab. Stage 1B is limited to the five authorized capability proofs in SNDISH-015. The Stage 1A Live Lab remains a separate release surface; Stage 1B staging evidence cannot be treated as a production release.
