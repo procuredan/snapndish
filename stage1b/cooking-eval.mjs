@@ -18,6 +18,16 @@ const meal = { meal: 'Beef and vegetable stir-fry with jasmine rice and citrus s
       { name: 'Honey', quantity: '2 tablespoons' }, { name: 'Sesame oil', quantity: '2 teaspoons' },
       { name: 'Cornstarch', quantity: '2 teaspoons' }, { name: 'Neutral oil', quantity: '3 tablespoons' }] },
   ] };
+const hambaguMeal = { meal: 'Japanese hambāgu with rice, cucumber salad and pan sauce', servings: 2,
+  sections: [
+    { section: 'Meat and dairy', items: [{ name: 'Ground beef and pork blend', quantity: '1 pound' },
+      { name: 'Egg', quantity: '1' }, { name: 'Milk', quantity: '2 tablespoons' }] },
+    { section: 'Produce', items: [{ name: 'Cucumber', quantity: '1 large' },
+      { name: 'Onion', quantity: '1 small' }, { name: 'Mushrooms', quantity: '4 ounces' }] },
+    { section: 'Pantry', items: [{ name: 'Short-grain rice', quantity: '1 cup dry' },
+      { name: 'Panko', quantity: '¼ cup' }, { name: 'Rice vinegar', quantity: '2 tablespoons' },
+      { name: 'Soy sauce', quantity: '2 tablespoons' }, { name: 'Ketchup', quantity: '2 tablespoons' }] },
+  ] };
 const cases = [
   { id: 'cooking-checkpoints-fixed', turns: ["Let's cook.", 'Rice is going.', 'Done.', 'Wok.', 'Beef is browned.'] },
   { id: 'cooking-recovery-held-out', turns: ["Let's cook.", "I don't have rice vinegar.", "The rice isn't done yet."] },
@@ -28,6 +38,7 @@ const cases = [
     turns: ["The wok isn't getting hot."] },
   { id: 'full-plan-no-routine-ack', turns: ["Let's cook.", 'Can I use my rice cooker for the rice?'] },
   { id: 'full-plan-recovery', turns: ["Let's cook.", "I don't have rice vinegar and the rice isn't done yet."] },
+  { id: 'coordinated-hambagu-no-ack', meal: hambaguMeal, turns: ["Let's cook."] },
   { id: 'equipment-multiple-options', priorAssistant: 'For the stir-fry, do you have a wok or a skillet?',
     turns: ['I have both.'] },
   { id: 'equipment-repeated-answer', priorTurns: [
@@ -92,7 +103,8 @@ const results = [];
 for (const scenario of cases.filter(x => !process.env.COOKING_EVAL_CASES ||
   process.env.COOKING_EVAL_CASES.split(',').includes(x.id))) for (const arm of arms.filter(x => !process.env.COOKING_EVAL_ARMS ||
   process.env.COOKING_EVAL_ARMS.split(',').includes(x.id))) {
-  const messages = [{ role: 'user', content: `We selected ${meal.meal} for four. Shopping is complete. I own a rice cooker. Here is the consolidated meal and ingredient plan: ${JSON.stringify(meal)}` },
+  const activeMeal = scenario.meal ?? meal;
+  const messages = [{ role: 'user', content: `We selected ${activeMeal.meal} for ${activeMeal.servings}. Shopping is complete. I own a rice cooker. Here is the consolidated meal and ingredient plan: ${JSON.stringify(activeMeal)}` },
     { role: 'assistant', content: 'Perfect. I got you from here. The complete meal and shopping list are ready.' }];
   if (scenario.priorAssistant) messages.push({ role: 'assistant', content: scenario.priorAssistant });
   if (scenario.priorTurns) messages.push(...scenario.priorTurns);
@@ -107,7 +119,7 @@ for (const scenario of cases.filter(x => !process.env.COOKING_EVAL_CASES ||
         ? (arm.id === 'cooking-v2' ? instructionsForCookingModeV2 : instructionsForCookingMode)
           ('Owns a rice cooker.', true, Boolean(cookingProgress)) : arm.instructions;
       const toolChoice = arm.id === 'cooking-required' && !cookingProgress ? 'auto' : arm.toolChoice;
-      const response = await call(instructions + `\n\nCurrent application-accepted meal and shopping state: ${JSON.stringify(meal)}. Shopping is complete.` + state,
+      const response = await call(instructions + `\n\nCurrent application-accepted meal and shopping state: ${JSON.stringify(activeMeal)}. Shopping is complete.` + state,
         messages, arm.tools, toolChoice);
       if (response.incompleteReason) {
         const record = { scenario: scenario.id, arm: arm.id, userText,
