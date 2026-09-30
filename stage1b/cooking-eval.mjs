@@ -22,6 +22,10 @@ const cases = [
   { id: 'cooking-checkpoints-fixed', turns: ["Let's cook.", 'Rice is going.', 'Done.', 'Wok.', 'Beef is browned.'] },
   { id: 'cooking-recovery-held-out', turns: ["Let's cook.", "I don't have rice vinegar.", "The rice isn't done yet."] },
   { id: 'cooking-direct-question-held-out', turns: ["Let's cook.", 'How much water should go in the rice cooker?'] },
+  { id: 'cooking-burning-held-out', initialAction: 'Cook the beef strips in a hot wok until browned; tell me when they are browned.',
+    turns: ['The beef is burning.'] },
+  { id: 'cooking-cold-wok-held-out', initialAction: 'Heat the wok for the beef strips; tell me when it is hot.',
+    turns: ["The wok isn't getting hot."] },
 ];
 const arms = [
   { id: 'foundation', instructions: instructionsFor('A', ''), tools: [] },
@@ -79,7 +83,9 @@ for (const scenario of cases.filter(x => !process.env.COOKING_EVAL_CASES ||
   process.env.COOKING_EVAL_ARMS.split(',').includes(x.id))) {
   const messages = [{ role: 'user', content: `We selected ${meal.meal} for four. Shopping is complete. I own a rice cooker. Here is the consolidated meal and ingredient plan: ${JSON.stringify(meal)}` },
     { role: 'assistant', content: 'Perfect. I got you from here. The complete meal and shopping list are ready.' }];
-  let cookingProgress = null;
+  let cookingProgress = scenario.initialAction ? { current_action: scenario.initialAction,
+    remaining_components: ['Beef', 'Vegetables', 'Citrus side salad'], reports: [] } : null;
+  if (scenario.initialAction) messages.push({ role: 'assistant', content: scenario.initialAction });
   for (const userText of scenario.turns.slice(0, Number(process.env.COOKING_EVAL_TURN_LIMIT) || scenario.turns.length)) {
     messages.push({ role: 'user', content: userText });
     const state = arm.id.startsWith('cooking-') ? `\n\nApplication-accepted cooking progress: ${JSON.stringify(cookingProgress)}. Only customer reports count as actual progress.` : '';
