@@ -6,7 +6,7 @@ Before material work, read [`SNAP_GLOBAL_RULES.md`](SNAP_GLOBAL_RULES.md), [`SNA
 
 ## Current authorization boundary
 
-The owner has authorized the five Stage 1B capability proofs in SNDISH-015 and the Next Flow Build on isolated Stage 1B staging in SNDISH-016. Preserve the instrumented Stage 1A Live Lab at `app.snapndish.com`, its direct chat entry, protected owner review, controlled evaluation, and private results. Build Stage 1B incrementally on separate Snap n Dish staging resources. This does not authorize a public beta, commercial-alpha build, or production deployment. Future production deployments require explicit owner authorization.
+The owner has authorized the five Stage 1B capability proofs in SNDISH-015, the Next Flow Build in SNDISH-016, and the Cooking Mode choreography experiment in SNDISH-017 on isolated Stage 1B staging. Preserve the instrumented Stage 1A Live Lab at `app.snapndish.com`, its direct chat entry, protected owner review, controlled evaluation, and private results. Build Stage 1B incrementally on separate Snap n Dish staging resources. This does not authorize a public beta, commercial-alpha build, or production deployment. Future production deployments require explicit owner authorization.
 
 ## Snap n Dish build principles
 
@@ -33,4 +33,4 @@ Write down the existing system, its authoritative owner, the requested extension
 
 ## Out of scope unless separately authorized
 
-No Snap n Done provider, job, quote, routing/BID_READY, matching, offer, fee, tip, transfer, Stripe/payment, supply, marketplace SMS or Walter policy belongs here. Do not mutate Snap n Done, Procure, Walter, Clink Pass or their resources. Stage 1B authorizes only realtime Talk It, conversational Snap It, durable/current conversation, minimal cross-device continuation, and one closed-app return proof. Do not build grocery commerce, a recipe corpus, native clients, a parent-profile service, or the commercial-alpha application.
+No Snap n Done provider, job, quote, routing/BID_READY, matching, offer, fee, tip, transfer, Stripe/payment, supply, marketplace SMS or Walter policy belongs here. Do not mutate Snap n Done, Procure, Walter, Clink Pass or their resources. Stage 1B includes the five original proofs plus the explicitly authorized next-flow and cooking choreography experiments. Do not build grocery commerce, a recipe corpus, native clients, a parent-profile service, advanced schedule orchestration, or the commercial-alpha application.

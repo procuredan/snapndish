@@ -13,7 +13,8 @@ class TestDB {
     this.raw.exec(fs.readFileSync(new URL('../live-lab/migrations/0001_init.sql', import.meta.url), 'utf8'));
     for (const file of ['0002_turn_operations.sql', '0003_stage1b_identity_meal.sql',
       '0004_stage1b_images.sql', '0005_stage1b_context_snapshot.sql',
-       '0006_stage1b_voice.sql', '0007_stage1b_return.sql', '0008_next_flow_shopping.sql'])
+       '0006_stage1b_voice.sql', '0007_stage1b_return.sql', '0008_next_flow_shopping.sql',
+       '0009_cooking_progress.sql'])
       this.raw.exec(fs.readFileSync(new URL('../stage1b/migrations/' + file, import.meta.url), 'utf8'));
   }
   prepare(sql) {
@@ -679,4 +680,221 @@ test('Stage 1B renders a current model meal when the provider returns only a pla
   } finally { globalThis.fetch = original; }
   assert.equal(e.DB.raw.prepare("SELECT COUNT(*) AS n FROM state_events WHERE kind='tool_only_transition_rendered'").get().n, 1);
   assert.equal(e.DB.raw.prepare("SELECT COUNT(*) AS n FROM state_events WHERE kind='meal_plan_accepted'").get().n, 1);
+});
+
+test('Cooking Mode accepts only customer-reported progress and keeps one current action', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-cooking-v1';
+  const visitor = await createVisitorSession(e, '');
+  const plan = { meal: 'Beef and vegetable stir-fry with jasmine rice and citrus salad', servings: 4, sections: [
+    { section: 'Meat', items: [{ name: 'Beef', quantity: '1 pound', have_status: 'confirmed' }] },
+    { section: 'Pantry', items: [{ name: 'Jasmine rice', quantity: '1 cup', have_status: 'confirmed' }] },
+  ] };
+  const sequence = [
+    { text: 'Perfect. Your beef stir-fry, rice and salad are planned. The shopping list is ready.',
+      call: { type: 'function_call', name: 'publish_meal_plan', arguments: JSON.stringify(plan) } },
+    { text: '', call: { type: 'function_call', name: 'update_cooking_progress', arguments: JSON.stringify({
+      current_action: 'First, add 1 cup jasmine rice and the appropriate water to your rice cooker and start it. Tell me when it is going.',
+      remaining_components: ['Rice', 'Sauce', 'Beef and vegetables', 'Citrus salad'],
+      customer_report: { quote: "Let's cook.", understood_as: 'Ready to begin cooking' },
+    }) } },
+    { text: 'Perfect. Mix the sauce in a small bowl, then tell me when it is smooth.',
+      call: { type: 'function_call', name: 'update_cooking_progress', arguments: JSON.stringify({
+        current_action: 'Mix the sauce in a small bowl, then tell me when it is smooth.',
+        customer_report: { quote: 'Rice is going.', understood_as: 'Rice cooker started' },
+        remaining_components: ['Sauce', 'Beef and vegetables', 'Citrus salad'],
+      }) } },
+    { text: 'Great. Do you have a wok or a cast-iron skillet?',
+      call: { type: 'function_call', name: 'update_cooking_progress', arguments: JSON.stringify({
+        current_action: 'Do you have a wok or a cast-iron skillet?',
+        customer_report: { quote: 'Done.', understood_as: 'Sauce mixed' },
+        remaining_components: ['Beef and vegetables', 'Citrus salad'],
+      }) } },
+    { text: 'Get your wok hot, add the oil and beef, and leave it to brown before stirring. Tell me when the beef is browned.',
+      call: { type: 'function_call', name: 'update_cooking_progress', arguments: JSON.stringify({
+        current_action: 'Get your wok hot, add the oil and beef, and leave it to brown before stirring. Tell me when the beef is browned.',
+        equipment_change: { name: 'wok', status: 'owned', quote: 'Wok.' },
+        remaining_components: ['Beef and vegetables', 'Citrus salad'],
+      }) } },
+    { text: 'Now cook the vegetables until crisp-tender while the rice finishes.',
+      call: { type: 'function_call', name: 'update_cooking_progress', arguments: JSON.stringify({
+        current_action: 'Cook the vegetables until crisp-tender while the rice finishes.',
+        customer_report: { quote: 'Beef is browned.', understood_as: 'Beef browned' },
+        remaining_components: ['Vegetables', 'Citrus salad'],
+      }) } },
+    { text: 'About 2 tablespoons, added when the wok is hot.', call: null },
+    { text: 'No problem. Keep the rice going while you finish the vegetables; check it before serving.',
+      call: { type: 'function_call', name: 'update_cooking_progress', arguments: JSON.stringify({
+        current_action: 'Keep the rice going while you finish the vegetables; check it before serving.',
+        customer_report: { quote: "My rice isn't done.", understood_as: 'Rice is not ready yet' },
+        remaining_components: ['Vegetables', 'Rice', 'Citrus salad'],
+      }) } },
+    { text: 'Chicken curry and rice it is. I have updated the meal and shopping list.',
+      call: { type: 'function_call', name: 'publish_meal_plan', arguments: JSON.stringify({
+        meal: 'Chicken curry and rice', servings: 4, sections: [
+          { section: 'Meat', items: [{ name: 'Chicken', quantity: '2 pounds', have_status: 'need' }] },
+        ],
+      }) } },
+  ];
+  let step = 0;
+  const original = globalThis.fetch;
+  globalThis.fetch = async (_url, init) => {
+    const input = JSON.parse(init.body);
+    assert.deepEqual(input.tools.map(x => x.name), ['publish_meal_plan', 'update_cooking_progress']);
+    assert.equal(input.tool_choice, step <= 1 ? 'auto' : 'required');
+    if (step === 5) assert.match(input.instructions, /Customer-reported equipment.*wok/i);
+    const next = sequence[step++];
+    assert.ok(next, 'no extra model call');
+    return providerStream(next.text, next.call ? [next.call] : []);
+  };
+  async function send(text) {
+    const revision = e.DB.raw.prepare('SELECT revision FROM sessions WHERE id=?').get(visitor.id).revision;
+    const response = await worker.fetch(req(`/api/sessions/${visitor.id}/turns`, 'POST',
+      { text, turnId: crypto.randomUUID(), expectedRevision: revision }, visitor.cookie), e, context());
+    assert.match(await response.text(), /"type":"complete"/);
+  }
+  try {
+    await send('That meal sounds good. Shopping is complete.');
+    await send("Let's cook.");
+    let saved = await (await worker.fetch(req(`/api/sessions/${visitor.id}`, 'GET', undefined, visitor.cookie), e, context())).json();
+    assert.equal(saved.cooking_progress.reports.length, 0, 'instruction did not imply completion');
+    assert.match(saved.turns.at(-1).text, /1 cup jasmine rice/);
+    assert.doesNotMatch(saved.turns.at(-1).text, /beef|salad/i);
+    await send('Rice is going.');
+    await send('Done.');
+    await send('Wok.');
+    assert.equal(e.DB.raw.prepare("SELECT status FROM customer_equipment WHERE name='wok'").get().status, 'owned');
+    await send('Beef is browned.');
+    saved = await (await worker.fetch(req(`/api/sessions/${visitor.id}`, 'GET', undefined, visitor.cookie), e, context())).json();
+    assert.deepEqual(saved.cooking_progress.reports.map(x => x.understood_as),
+      ['Rice cooker started', 'Sauce mixed', 'Beef browned']);
+    const beforeQuestion = saved.cooking_revision;
+    await send('How much oil?');
+    assert.equal(e.DB.raw.prepare('SELECT cooking_revision FROM sessions WHERE id=?').get(visitor.id).cooking_revision,
+      beforeQuestion, 'direct question did not advance progress');
+    await send("My rice isn't done.");
+    saved = await (await worker.fetch(req(`/api/sessions/${visitor.id}`, 'GET', undefined, visitor.cookie), e, context())).json();
+    assert.equal(saved.cooking_progress.reports.at(-1).understood_as, 'Rice is not ready yet');
+    assert.match(saved.cooking_progress.current_action, /rice going/);
+    assert.equal(e.DB.raw.prepare("SELECT COUNT(*) AS n FROM state_events WHERE kind='cooking_progress_accepted'").get().n, 6);
+    const beforeMealChange = saved.cooking_revision;
+    await send('Actually, change to chicken curry instead.');
+    saved = await (await worker.fetch(req(`/api/sessions/${visitor.id}`, 'GET', undefined, visitor.cookie), e, context())).json();
+    assert.equal(saved.meal_plan.meal, 'Chicken curry and rice');
+    assert.equal(saved.cooking_progress, null, 'new meal invalidates prior cooking action and reports');
+    assert.equal(saved.cooking_revision, beforeMealChange + 1);
+    assert.equal(step, sequence.length);
+  } finally { globalThis.fetch = original; }
+});
+
+test('an accepted shopping plan does not start Cooking Mode before the customer does', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-cooking-v1';
+  const { id, cookie } = await createVisitorSession(e, 'Owns a rice cooker.');
+  e.DB.raw.prepare('UPDATE sessions SET meal_revision=1,meal_plan_json=? WHERE id=?')
+    .run(JSON.stringify({ meal: 'Stir-fry with rice', servings: 2, sections: [] }), id);
+  const original = globalThis.fetch;
+  globalThis.fetch = async (_url, init) => {
+    const input = JSON.parse(init.body);
+    assert.equal(input.tool_choice, 'auto');
+    assert.match(input.instructions, /do not start cooking until the customer wants to/i);
+    return providerStream('Yes, the shopping list is still available. You can change any checked item before we cook.', []);
+  };
+  try {
+    const response = await worker.fetch(req(`/api/sessions/${id}/turns`, 'POST',
+      { text: 'Can I change the shopping list?', turnId: crypto.randomUUID(), expectedRevision: 0 }, cookie), e, context());
+    assert.match(await response.text(), /"type":"complete"/);
+    const saved = await (await worker.fetch(req(`/api/sessions/${id}`, 'GET', undefined, cookie), e, context())).json();
+    assert.equal(saved.cooking_progress, null);
+    assert.equal(saved.meal_plan.meal, 'Stir-fry with rice');
+  } finally { globalThis.fetch = original; }
+});
+
+test('temporary equipment is removed when an older Worker expires its customer', () => {
+  const db = new TestDB().raw;
+  db.exec('PRAGMA foreign_keys=ON');
+  const customerId = crypto.randomUUID(), sessionId = crypto.randomUUID();
+  const at = new Date().toISOString();
+  db.prepare('INSERT INTO customers (id,created_at,expires_at) VALUES (?,?,?)')
+    .run(customerId, at, at);
+  db.prepare(`INSERT INTO customer_equipment
+    (customer_id,name,status,source_session_id,source_turn_id,created_at,expires_at)
+    VALUES (?,?,?,?,?,?,?)`).run(customerId, 'wok', 'owned', sessionId, crypto.randomUUID(), at, at);
+  db.prepare('DELETE FROM customers WHERE id=?').run(customerId);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM customer_equipment').get().n, 0);
+});
+
+test('Cooking Mode rejects unsupported progress and accepts the same state through Talk It', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-cooking-v1';
+  const { id, cookie } = await createVisitorSession(e, 'Owns a rice cooker.');
+  e.DB.raw.prepare('UPDATE sessions SET meal_revision=1,meal_plan_json=? WHERE id=?')
+    .run(JSON.stringify({ meal: 'Stir-fry, rice and citrus salad', servings: 2, sections: [
+      { section: 'Pantry', items: [{ id: crypto.randomUUID(), name: 'Rice', quantity: '1 cup',
+        checked: true, have_status: 'confirmed' }] },
+    ] }), id);
+  const original = globalThis.fetch;
+  globalThis.fetch = async (_url, options) => {
+    const setup = JSON.parse(options.body.get('session'));
+    assert.deepEqual(setup.tools.map(x => x.name), ['publish_meal_plan', 'update_cooking_progress']);
+    assert.equal(setup.tool_choice, 'auto');
+    assert.match(setup.instructions, /Stir-fry, rice and citrus salad/);
+    return new Response('v=0\r\nanswer', { status: 201 });
+  };
+  let voiceId;
+  try {
+    const start = await worker.fetch(req(`/api/sessions/${id}/voice/start`, 'POST',
+      { sdp: 'v=0\r\noffer', expectedRevision: 0 }, cookie), e, context());
+    assert.equal(start.status, 201);
+    const connected = await start.json();
+    voiceId = connected.voiceSessionId;
+    assert.match(connected.cookingSyncInstructions, /Guide cooking one coherent action at a time/);
+  } finally { globalThis.fetch = original; }
+  async function user(itemId, transcript) {
+    const response = await worker.fetch(req(`/api/sessions/${id}/voice/events`, 'POST',
+      { voiceSessionId: voiceId, type: 'user', itemId, transcript }, cookie), e, context());
+    assert.equal(response.status, 200);
+  }
+  async function assistant(responseId, itemId, transcript, proposal) {
+    const response = await worker.fetch(req(`/api/sessions/${id}/voice/events`, 'POST',
+      { voiceSessionId: voiceId, type: 'assistant', responseId, userItemId: itemId,
+        transcript, cookingCall: { name: 'update_cooking_progress', arguments: JSON.stringify(proposal) } },
+      cookie), e, context());
+    return response.json();
+  }
+  await user('item_cook_1', "Let's cook.");
+  const first = await assistant('resp_cook_1', 'item_cook_1', 'First, get the rice going in your rice cooker.',
+    { current_action: 'Get the rice going in your rice cooker.', remaining_components: ['Rice', 'Beef', 'Salad'] });
+  assert.equal(first.cookingAccepted, true);
+  let saved = await (await worker.fetch(req(`/api/sessions/${id}`, 'GET', undefined, cookie), e, context())).json();
+  assert.equal(saved.cooking_progress.reports.length, 0);
+  await user('item_cook_2', 'Rice is going.');
+  const second = await assistant('resp_cook_2', 'item_cook_2', 'Now mix the sauce in a small bowl.',
+    { current_action: 'Mix the sauce in a small bowl.',
+      customer_report: { quote: 'Rice is going.', understood_as: 'Rice cooker started' },
+      remaining_components: ['Sauce', 'Beef', 'Salad'] });
+  assert.equal(second.cookingAccepted, true);
+  saved = await (await worker.fetch(req(`/api/sessions/${id}`, 'GET', undefined, cookie), e, context())).json();
+  assert.equal(saved.cooking_progress.reports[0].understood_as, 'Rice cooker started');
+  assert.equal(e.DB.raw.prepare('SELECT cooking_revision_snapshot FROM voice_sessions WHERE id=?').get(voiceId)
+    .cooking_revision_snapshot, saved.cooking_revision);
+  await user('item_cook_3', 'Actually, the sauce is missing soy sauce.');
+  const late = await assistant('resp_cook_late', 'item_cook_2', 'Ignore that and start the beef.',
+    { current_action: 'Start the beef.', customer_report: { quote: 'Rice is going.', understood_as: 'Rice done' } });
+  assert.equal(late.status, 'stale_rejected');
+  assert.equal(e.DB.raw.prepare('SELECT cooking_revision FROM sessions WHERE id=?').get(id).cooking_revision,
+    saved.cooking_revision);
+  const invalid = await assistant('resp_cook_3', 'item_cook_3', 'Use a little citrus instead.',
+    { current_action: 'Use a little citrus instead.',
+      customer_report: { quote: 'Everything is done.', understood_as: 'Meal completed' } });
+  assert.equal(invalid.cookingAccepted, true, 'safe next action remains usable');
+  const final = JSON.parse(e.DB.raw.prepare('SELECT cooking_progress_json FROM sessions WHERE id=?').get(id).cooking_progress_json);
+  assert.equal(final.reports.length, 1, 'unsupported completion was not saved');
+  const events = e.DB.raw.prepare("SELECT details_json FROM state_events WHERE kind='cooking_progress_accepted' ORDER BY rowid").all();
+  assert.deepEqual(JSON.parse(events.at(-1).details_json).ignored_fields, ['customer_report']);
+  assert.equal(e.DB.raw.prepare('SELECT cooking_revision FROM sessions WHERE id=?').get(id).cooking_revision,
+    saved.cooking_revision + 1);
 });

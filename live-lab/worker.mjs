@@ -1,8 +1,9 @@
-import { instructionsFor, instructionsForCandidate, instructionsForNextFlow, estimateUsd, BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, NEXT_FLOW_BEHAVIOR_VERSION, CONTEXT_VERSION, SCENARIO_VERSION } from '../src/config.ts';
+import { instructionsFor, instructionsForCandidate, instructionsForNextFlow, instructionsForCookingMode, estimateUsd, BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, NEXT_FLOW_BEHAVIOR_VERSION, COOKING_BEHAVIOR_VERSION, CONTEXT_VERSION, SCENARIO_VERSION } from '../src/config.ts';
 import { page } from './ui.mjs';
 import { stripJpegMetadata } from './jpeg.mjs';
 import { serviceWorker } from './push-sw.mjs';
 import { MEAL_PLAN_TOOL, normalizeMealPlan, planFromOutput } from './meal-plan.mjs';
+import { COOKING_PROGRESS_TOOL, cookingFromOutput } from './cooking-progress.mjs';
 
 const DAY = 86_400_000;
 const VOICE_MODEL = 'gpt-realtime-2.1';
@@ -11,6 +12,9 @@ const SESSION_COOKIE = '__Host-sndlab-session';
 const CUSTOMER_COOKIE = '__Host-sndlab-customer';
 const encoder = new TextEncoder();
 const isStage1b = env => env.STAGE1B_ENABLED === 'true';
+const isNextFlow = version => version === NEXT_FLOW_BEHAVIOR_VERSION || version === COOKING_BEHAVIOR_VERSION;
+const toolsFor = version => version === COOKING_BEHAVIOR_VERSION
+  ? [MEAL_PLAN_TOOL, COOKING_PROGRESS_TOOL] : version === NEXT_FLOW_BEHAVIOR_VERSION ? [MEAL_PLAN_TOOL] : [];
 const BASE_HEADERS = {
   'Cache-Control': 'no-store',
   'X-Content-Type-Options': 'nosniff',
@@ -88,7 +92,7 @@ async function canUseSession(request, env, id) {
 }
 function html(kind, env) {
   const nonce = randomToken(15);
-  return new Response(page(kind, nonce, isStage1b(env), env.BEHAVIOR_VERSION === NEXT_FLOW_BEHAVIOR_VERSION), { headers: {
+  return new Response(page(kind, nonce, isStage1b(env), isNextFlow(env.BEHAVIOR_VERSION)), { headers: {
     ...BASE_HEADERS,
     'Permissions-Policy': isStage1b(env) ? 'camera=(self), microphone=(self), geolocation=()' : BASE_HEADERS['Permissions-Policy'],
     'Content-Type': 'text/html; charset=utf-8',
@@ -143,7 +147,36 @@ function publicSession(s) {
     meal_source_turn_id: s.meal_source_turn_id ?? null, meal_accepted_at: s.meal_accepted_at ?? null,
     shopping_revision: s.shopping_revision ?? 0,
     meal_plan: s.meal_plan_json ? JSON.parse(s.meal_plan_json) : null,
+    cooking_revision: s.cooking_revision ?? 0,
+    cooking_progress: s.cooking_progress_json ? JSON.parse(s.cooking_progress_json) : null,
     active_voice_id: s.active_voice_until > now() ? s.active_voice_id : null };
+}
+
+async function equipmentContext(env, session) {
+  if (!session.customer_id || !isStage1b(env) || env.BEHAVIOR_VERSION !== COOKING_BEHAVIOR_VERSION)
+    return { text: '', memory: 'none — no equipment facts retrieved' };
+  const rows = await env.DB.prepare("SELECT name FROM customer_equipment WHERE customer_id=? AND status='owned' AND expires_at>? ORDER BY created_at LIMIT 20")
+    .bind(session.customer_id, now()).all();
+  const names = (rows.results ?? []).map(row => row.name);
+  return { text: names.length ? `\n\nCustomer-reported equipment available across this temporary Stage 1B customer: ${names.join(', ')}. Ownership creates options, not obligations.` : '',
+    memory: names.length ? JSON.stringify({ reported_equipment: names }) : 'none — no equipment facts retrieved' };
+}
+
+function cookingContext(session) {
+  return session.cooking_progress_json
+    ? `\n\nApplication-accepted cooking progress (meal revision ${session.meal_revision}, cooking revision ${session.cooking_revision}):\n${session.cooking_progress_json.slice(0, 6000)}\nReports describe what the customer said happened; the current action is not completed until the customer reports it.`
+    : '\n\nNo cooking action or progress has been accepted for this meal.';
+}
+
+function nextCookingState(session, proposed, assistantId, userTurnId, at) {
+  const prior = session.cooking_progress_json ? JSON.parse(session.cooking_progress_json) : null;
+  const reports = prior?.meal_revision === session.meal_revision ? prior.reports ?? [] : [];
+  return JSON.stringify({ meal_revision: session.meal_revision, current_action: proposed.current_action,
+    current_action_turn_id: assistantId, remaining_components: proposed.remaining_components ??
+      (prior?.meal_revision === session.meal_revision ? prior.remaining_components : null) ?? [],
+    reports: [...reports, ...(proposed.customer_report ? [{ source_turn_id: userTurnId,
+      quote: proposed.customer_report.quote, understood_as: proposed.customer_report.understood_as, at }] : [])].slice(-30),
+    updated_at: at });
 }
 
 async function createSession(request, env) {
@@ -161,6 +194,9 @@ async function createSession(request, env) {
   } else if (isStage1b(env)) {
     await env.DB.prepare('UPDATE customers SET expires_at=? WHERE id=? AND expires_at>?')
       .bind(expires, customer.id, at).run();
+    if (env.BEHAVIOR_VERSION === COOKING_BEHAVIOR_VERSION)
+      await env.DB.prepare('UPDATE customer_equipment SET expires_at=? WHERE customer_id=? AND expires_at>?')
+        .bind(expires, customer.id, at).run();
     customer.expires_at = expires;
   }
   await env.DB.prepare('INSERT INTO sessions (id,created_at,updated_at,revision,customer_context,expires_at,customer_id) VALUES (?,?,?,?,?,?,?)')
@@ -227,7 +263,8 @@ async function acceptMeal(request, env, id) {
   const acceptedAt = now();
   const saved = await env.DB.batch([
     env.DB.prepare(`UPDATE sessions SET revision=revision+1,meal_revision=meal_revision+1,
-      meal_source_turn_id=?,meal_accepted_at=?,updated_at=?
+      meal_source_turn_id=?,meal_accepted_at=?,
+      ${env.BEHAVIOR_VERSION === COOKING_BEHAVIOR_VERSION ? 'cooking_revision=cooking_revision+1,cooking_progress_json=NULL,' : ''}updated_at=?
       WHERE id=? AND revision=? AND meal_revision=? AND (active_voice_id IS NULL OR active_voice_until<=?)`)
       .bind(selected.id, acceptedAt, acceptedAt, id, session.revision, session.meal_revision, acceptedAt),
     env.DB.prepare(`INSERT INTO state_events (id,session_id,turn_id,revision,kind,at,details_json)
@@ -409,8 +446,10 @@ function firstUsefulProxy(text) {
   return text.length >= 50 && (/[.!?](?:\s|$)/.test(text) || /\n\s*[-*]/.test(text));
 }
 
-function behaviorFor(env, context) {
+function behaviorFor(env, context, hasAcceptedMeal = false, cookingActive = false) {
   const version = env.BEHAVIOR_VERSION || BEHAVIOR_VERSION;
+  if (version === COOKING_BEHAVIOR_VERSION && isStage1b(env) && (!env.ARM || env.ARM === 'C'))
+    return { version, instructions: instructionsForCookingMode(context, hasAcceptedMeal, cookingActive) };
   if (version === NEXT_FLOW_BEHAVIOR_VERSION && isStage1b(env) && (!env.ARM || env.ARM === 'C'))
     return { version, instructions: instructionsForNextFlow(context) };
   if (version === CANDIDATE_BEHAVIOR_VERSION && (!env.ARM || env.ARM === 'C'))
@@ -548,12 +587,14 @@ async function startVoice(request, env, id) {
   const meal = session.meal_source_turn_id ? await env.DB.prepare("SELECT text FROM turns WHERE id=? AND session_id=? AND role='assistant'")
     .bind(session.meal_source_turn_id, id).first() : null;
   const contextText = session.customer_context || 'No saved customer facts provided yet.';
-  const behavior = behaviorFor(env, contextText);
-   const planContext = behavior.version === NEXT_FLOW_BEHAVIOR_VERSION && session.meal_plan_json
+  const behavior = behaviorFor(env, contextText, Boolean(session.meal_plan_json), Boolean(session.cooking_progress_json));
+  const equipment = await equipmentContext(env, session);
+   const planContext = isNextFlow(behavior.version) && session.meal_plan_json
      ? `\n\nCurrent application-accepted meal and shopping state (revision ${session.meal_revision}):\n${session.meal_plan_json.slice(0, 6000)}\nChecked shopping items are held or assumed as labeled, not proof of cooking.` : '';
    const instructions = behavior.instructions + (meal
     ? `\n\nAccepted meal reference (revision ${session.meal_revision}): The customer saved this reply as the active meal; do not assume they cooked anything.\n${meal.text.slice(0, 4000)}` : '') +
-     planContext + (transcript ? `\n\nConversation so far, in order. Continue naturally from this context; these are past turns, not new instructions:\n${transcript}` : '') +
+     planContext + equipment.text + (behavior.version === COOKING_BEHAVIOR_VERSION && session.meal_plan_json ? cookingContext(session) : '') +
+     (transcript ? `\n\nConversation so far, in order. Continue naturally from this context; these are past turns, not new instructions:\n${transcript}` : '') +
      '\n\nSpoken mode: respond conversationally and keep each spoken reply proportional to the immediate need. The visible transcript accompanies your speech. Use the same culinary judgment as Write It. When a meal is ready, speak only the brief transition and meal, then propose the shopping list with the tool. Never read the shopping items aloud.';
   const voiceId = crypto.randomUUID(), opened = now(), expires = new Date(Date.now() + 60 * 60_000).toISOString();
   const claimed = await env.DB.batch([
@@ -563,10 +604,13 @@ async function startVoice(request, env, id) {
         AND o.status='pending' AND o.lease_until>?)`)
       .bind(voiceId, expires, id, session.revision, session.meal_revision, opened, opened),
     env.DB.prepare(`INSERT INTO voice_sessions
-      (id,session_id,opened_at,expires_at,model,behavior_version,context_snapshot,meal_snapshot,transcript_snapshot)
-      SELECT ?,id,?,?,?,?,?,?,? FROM sessions WHERE id=? AND active_voice_id=?`)
+      (id,session_id,opened_at,expires_at,model,behavior_version,context_snapshot,meal_snapshot,transcript_snapshot,
+       meal_revision_snapshot,cooking_revision_snapshot,cooking_snapshot,equipment_snapshot)
+      SELECT ?,id,?,?,?,?,?,?,?,?,?,?,? FROM sessions WHERE id=? AND active_voice_id=?`)
       .bind(voiceId, opened, expires, VOICE_MODEL, `${behavior.version}+voice-v1`,
-         session.customer_context, session.meal_plan_json?.slice(0, 6000) ?? meal?.text.slice(0, 4000) ?? null, transcript, id, voiceId),
+         session.customer_context, session.meal_plan_json?.slice(0, 6000) ?? meal?.text.slice(0, 4000) ?? null,
+         transcript, session.meal_revision, session.cooking_revision ?? 0,
+         session.cooking_progress_json?.slice(0, 6000) ?? null, equipment.memory, id, voiceId),
   ]);
   if (claimed[0].meta.changes !== 1) return json({ error: 'VOICE_ACTIVE' }, 409);
   const began = performance.now();
@@ -575,7 +619,8 @@ async function startVoice(request, env, id) {
     form.set('sdp', input.sdp);
      form.set('session', JSON.stringify({ type: 'realtime', model: VOICE_MODEL,
        instructions, output_modalities: ['audio'],
-       ...(behavior.version === NEXT_FLOW_BEHAVIOR_VERSION ? { tools: [MEAL_PLAN_TOOL], tool_choice: 'auto' } : {}),
+       ...(isNextFlow(behavior.version) ? { tools: toolsFor(behavior.version),
+         tool_choice: behavior.version === COOKING_BEHAVIOR_VERSION && session.cooking_progress_json ? 'required' : 'auto' } : {}),
        audio: {
         input: { transcription: { model: 'gpt-live-transcribe' }, turn_detection: { type: 'semantic_vad' } },
         output: { voice: 'marin' },
@@ -594,7 +639,11 @@ async function startVoice(request, env, id) {
       { voice_session_id: voiceId, model: VOICE_MODEL, behavior_version: `${behavior.version}+voice-v1`, connect_ms: connectMs });
     return json({ voiceSessionId: voiceId, sdp, model: VOICE_MODEL,
       behaviorVersion: `${behavior.version}+voice-v1`, connectMs,
-      ...(behavior.version === NEXT_FLOW_BEHAVIOR_VERSION ? { syncInstructions: instructions } : {}) }, 201);
+      ...(isNextFlow(behavior.version) ? { syncInstructions: instructions } : {}),
+      ...(behavior.version === COOKING_BEHAVIOR_VERSION ? { cookingSyncInstructions:
+        instructionsForCookingMode(contextText, true, true) +
+        (transcript ? `\n\nConversation before this spoken session:\n${transcript}` : '') +
+        '\n\nSpoken mode: say only the current action or answer conversationally; keep the visible transcript. Do not read the full meal or shopping list aloud.' } : {}) }, 201);
   } catch (error) {
     const code = error instanceof Error && /^[A-Z_0-9]+$/.test(error.message) ? error.message : 'VOICE_CONNECT_ERROR';
     await env.DB.batch([
@@ -651,7 +700,8 @@ async function voiceEvent(request, env, id) {
     const prior = await env.DB.prepare('SELECT status FROM voice_assistant_items WHERE voice_session_id=? AND provider_response_id=?')
       .bind(voiceId, responseId).first();
     if (prior) return json({ status: prior.status });
-    const user = await env.DB.prepare('SELECT turn_id,revision FROM voice_user_items WHERE voice_session_id=? AND provider_item_id=?')
+    const user = await env.DB.prepare(`SELECT i.turn_id,i.revision,t.text FROM voice_user_items i
+      JOIN turns t ON t.id=i.turn_id WHERE i.voice_session_id=? AND i.provider_item_id=?`)
       .bind(voiceId, itemId).first();
     if (!user) return json({ error: 'VOICE_USER_NOT_SAVED' }, 409);
     const at = now(), callId = crypto.randomUUID(), assistantId = crypto.randomUUID();
@@ -659,17 +709,36 @@ async function voiceEvent(request, env, id) {
     const firstMs = Number.isInteger(input.firstUsefulMs) && input.firstUsefulMs >= 0 ? input.firstUsefulMs : null;
     const fullMs = Number.isInteger(input.fullMs) && input.fullMs >= 0 ? input.fullMs : null;
      const cost = voiceCost(usage);
-     const proposed = voice.behavior_version.startsWith(NEXT_FLOW_BEHAVIOR_VERSION) && input.planCall
+     const proposed = (voice.behavior_version.startsWith(NEXT_FLOW_BEHAVIOR_VERSION) ||
+       voice.behavior_version.startsWith(COOKING_BEHAVIOR_VERSION)) && input.planCall
        ? planFromOutput([{ type: 'function_call', name: input.planCall.name,
          arguments: input.planCall.arguments }]) : { plan: null, reason: null, calls: [] };
+     const cookingProposal = voice.behavior_version.startsWith(COOKING_BEHAVIOR_VERSION) && input.cookingCall
+       ? cookingFromOutput([{ type: 'function_call', name: input.cookingCall.name,
+         arguments: input.cookingCall.arguments }], user.text) : { cooking: null, reason: null, calls: [] };
+     if (cookingProposal.cooking && !session.meal_plan_json) {
+       cookingProposal.cooking = null;
+       cookingProposal.reason = 'NO_ACTIVE_PLAN';
+     }
+     if (proposed.plan && cookingProposal.cooking) {
+       proposed.plan = null;
+       cookingProposal.cooking = null;
+       cookingProposal.reason = 'CONFLICTING_STATE_PROPOSALS';
+     }
      const planJson = proposed.plan ? JSON.stringify(proposed.plan) : null;
+     const cookingJson = cookingProposal.cooking
+       ? nextCookingState(session, cookingProposal.cooking, assistantId, user.turn_id, at) : null;
+     const cookingEventId = crypto.randomUUID();
+     const equipmentName = cookingProposal.cooking?.equipment_change?.name.toLocaleLowerCase() ?? null;
+     const equipmentStatus = cookingProposal.cooking?.equipment_change?.status ?? null;
     const writes = await env.DB.batch([
       env.DB.prepare(`INSERT INTO turns (id,session_id,revision,role,text,created_at,model_call_id,source,provider_item_id)
         SELECT ?,s.id,?,'assistant',?,?,?,?,? FROM sessions s
         WHERE s.id=? AND s.revision=? AND s.active_voice_id=?
+        AND s.meal_revision=? AND s.cooking_revision=?
         AND NOT EXISTS (SELECT 1 FROM turns t WHERE t.session_id=s.id AND t.revision=? AND t.role='assistant')`)
         .bind(assistantId, user.revision, transcript, at, callId, 'talk', responseId,
-          id, user.revision, voiceId, user.revision),
+          id, user.revision, voiceId, voice.meal_revision_snapshot, voice.cooking_revision_snapshot, user.revision),
       env.DB.prepare(`INSERT INTO model_calls
         (id,session_id,user_turn_id,revision,requested_at,completed_at,status,requested_model,response_model,
          provider_response_id,behavior_version,context_version,reasoning_effort,customer_context_snapshot,
@@ -680,7 +749,7 @@ async function voiceEvent(request, env, id) {
           THEN 'accepted' ELSE 'stale_rejected' END,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
         .bind(callId, id, user.turn_id, user.revision, voice.opened_at, at, callId, VOICE_MODEL, VOICE_MODEL,
           responseId, voice.behavior_version, 'stage1b-context-v1', 'provider-default', voice.context_snapshot,
-           'none — no memory store in Stage 1B', JSON.stringify(proposed.calls.map(call => ({
+           voice.equipment_snapshot ?? 'none — no equipment facts retrieved', JSON.stringify([...proposed.calls, ...cookingProposal.calls].map(call => ({
              name: call.name, arguments: call.arguments, source: 'client_observed_realtime_event' }))), '[]', voice.meal_snapshot,
           voice.meal_snapshot ? session.meal_revision : null, firstMs, firstMs, fullMs,
           usage?.input_tokens ?? null, usage?.input_token_details?.cached_tokens ?? null,
@@ -696,11 +765,14 @@ async function voiceEvent(request, env, id) {
              source: 'client_observed_realtime_event', status: session.revision === user.revision ? 'accepted' : 'stale_rejected' })),
        ...(planJson ? [
          env.DB.prepare(`UPDATE sessions SET meal_revision=meal_revision+1,meal_source_turn_id=?,
-           meal_accepted_at=?,meal_plan_json=?,shopping_revision=shopping_revision+1,updated_at=?
+           meal_accepted_at=?,meal_plan_json=?,shopping_revision=shopping_revision+1,
+           ${voice.behavior_version.startsWith(COOKING_BEHAVIOR_VERSION) ? 'cooking_revision=cooking_revision+1,cooking_progress_json=NULL,' : ''}updated_at=?
            WHERE id=? AND revision=? AND active_voice_id=? AND EXISTS
            (SELECT 1 FROM turns WHERE id=? AND model_call_id=?)`)
            .bind(assistantId, at, planJson, at, id, user.revision, voiceId, assistantId, callId),
-         env.DB.prepare(`UPDATE voice_sessions SET meal_snapshot=? WHERE id=? AND EXISTS
+         env.DB.prepare(`UPDATE voice_sessions SET meal_snapshot=?,meal_revision_snapshot=meal_revision_snapshot+1,
+           ${voice.behavior_version.startsWith(COOKING_BEHAVIOR_VERSION) ? 'cooking_revision_snapshot=cooking_revision_snapshot+1,cooking_snapshot=NULL,' : ''}
+           transcript_snapshot=transcript_snapshot WHERE id=? AND EXISTS
            (SELECT 1 FROM turns WHERE id=? AND model_call_id=?)`)
            .bind(planJson, voiceId, assistantId, callId),
          env.DB.prepare(`INSERT INTO state_events (id,session_id,turn_id,revision,kind,at,details_json)
@@ -712,14 +784,48 @@ async function voiceEvent(request, env, id) {
                item_count: proposed.plan.sections.reduce((n, section) => n + section.items.length, 0) }),
              assistantId, callId),
        ] : []),
+       ...(cookingJson ? [
+         env.DB.prepare(`UPDATE sessions SET cooking_revision=cooking_revision+1,cooking_progress_json=?,updated_at=?
+           WHERE id=? AND revision=? AND meal_revision=? AND cooking_revision=? AND active_voice_id=?
+           AND meal_plan_json IS NOT NULL AND EXISTS (SELECT 1 FROM turns WHERE id=? AND model_call_id=?)`)
+           .bind(cookingJson, at, id, user.revision, session.meal_revision,
+             session.cooking_revision ?? 0, voiceId, assistantId, callId),
+         env.DB.prepare(`UPDATE voice_sessions SET cooking_revision_snapshot=cooking_revision_snapshot+1,
+           cooking_snapshot=? WHERE id=? AND EXISTS (SELECT 1 FROM sessions s WHERE s.id=?
+           AND s.cooking_revision=? AND json_extract(s.cooking_progress_json,'$.current_action_turn_id')=?)`)
+           .bind(cookingJson, voiceId, id, (session.cooking_revision ?? 0) + 1, assistantId),
+         env.DB.prepare(`INSERT INTO state_events (id,session_id,turn_id,revision,kind,at,details_json)
+           SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM sessions s WHERE s.id=?
+           AND s.cooking_revision=? AND json_extract(s.cooking_progress_json,'$.current_action_turn_id')=?)`)
+           .bind(cookingEventId, id, user.turn_id, user.revision, 'cooking_progress_accepted', at,
+             JSON.stringify({ model_call_id: callId, assistant_turn_id: assistantId,
+               customer_reported: Boolean(cookingProposal.cooking.customer_report),
+               equipment_change: equipmentName ? { name: equipmentName, status: equipmentStatus } : null,
+               ignored_fields: cookingProposal.cooking.ignored_fields,
+               source: 'client_observed_realtime_event', cooking_revision: (session.cooking_revision ?? 0) + 1 }),
+             id, (session.cooking_revision ?? 0) + 1, assistantId),
+         ...(equipmentName && session.customer_id ? [env.DB.prepare(`INSERT INTO customer_equipment
+           (customer_id,name,status,source_session_id,source_turn_id,created_at,expires_at)
+           SELECT ?,?,?,?,?,?,s.expires_at FROM sessions s WHERE s.id=? AND EXISTS
+           (SELECT 1 FROM state_events WHERE id=? AND kind='cooking_progress_accepted')
+           ON CONFLICT(customer_id,name) DO UPDATE SET status=excluded.status,
+           source_session_id=excluded.source_session_id,source_turn_id=excluded.source_turn_id,
+           created_at=excluded.created_at,expires_at=excluded.expires_at`)
+           .bind(session.customer_id, equipmentName, equipmentStatus, id, user.turn_id, at, id, cookingEventId)] : []),
+       ] : []),
        ...(proposed.reason ? [env.DB.prepare(`INSERT INTO state_events
          (id,session_id,turn_id,revision,kind,at,details_json) VALUES (?,?,?,?,?,?,?)`)
          .bind(crypto.randomUUID(), id, user.turn_id, user.revision, 'meal_plan_proposal_rejected', at,
            JSON.stringify({ model_call_id: callId, reason: proposed.reason }))] : []),
+       ...(cookingProposal.reason ? [env.DB.prepare(`INSERT INTO state_events
+         (id,session_id,turn_id,revision,kind,at,details_json) VALUES (?,?,?,?,?,?,?)`)
+         .bind(crypto.randomUUID(), id, user.turn_id, user.revision, 'cooking_proposal_rejected', at,
+           JSON.stringify({ model_call_id: callId, reason: cookingProposal.reason }))] : []),
      ]);
      return json({ status: writes[0].meta.changes === 1 ? 'accepted' : 'stale_rejected',
        revision: user.revision, assistantTurnId: writes[0].meta.changes === 1 ? assistantId : null,
-       planAccepted: planJson && writes[0].meta.changes === 1 });
+       planAccepted: planJson && writes[0].meta.changes === 1,
+       cookingAccepted: cookingJson && writes[0].meta.changes === 1 });
   }
   return json({ error: 'INVALID_VOICE_EVENT' }, 400);
 }
@@ -855,9 +961,9 @@ async function dispatchReturns(env) {
 
 async function streamTurn(request, env, ctx, id) {
   if (!env.OPENAI_API_KEY) return json({ error: 'MODEL_UNAVAILABLE' }, 503);
-  if (![BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, NEXT_FLOW_BEHAVIOR_VERSION].includes(env.BEHAVIOR_VERSION || BEHAVIOR_VERSION)
+  if (![BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, NEXT_FLOW_BEHAVIOR_VERSION, COOKING_BEHAVIOR_VERSION].includes(env.BEHAVIOR_VERSION || BEHAVIOR_VERSION)
     || (env.BEHAVIOR_VERSION === CANDIDATE_BEHAVIOR_VERSION && env.ARM && env.ARM !== 'C')
-    || (env.BEHAVIOR_VERSION === NEXT_FLOW_BEHAVIOR_VERSION && (!isStage1b(env) || (env.ARM && env.ARM !== 'C'))))
+    || (isNextFlow(env.BEHAVIOR_VERSION) && (!isStage1b(env) || (env.ARM && env.ARM !== 'C'))))
     return json({ error: 'INVALID_BEHAVIOR_CONFIGURATION' }, 503);
   const input = await bodyJson(request);
   const accepted = await acceptTurn(env, id, input);
@@ -866,17 +972,19 @@ async function streamTurn(request, env, ctx, id) {
   const model = env.MODEL || 'gpt-6-astra';
   const effort = env.REASONING_EFFORT || 'medium';
   const contextText = session.customer_context || 'No saved customer facts provided yet.';
-  const behavior = behaviorFor(env, contextText);
+  const behavior = behaviorFor(env, contextText, Boolean(session.meal_plan_json), Boolean(session.cooking_progress_json));
+  const equipment = await equipmentContext(env, session);
   const meal = isStage1b(env) && session.meal_source_turn_id
     ? await env.DB.prepare("SELECT text FROM turns WHERE id=? AND session_id=? AND role='assistant'")
       .bind(session.meal_source_turn_id, id).first() : null;
   const imageAddendum = imageIds.length > 0;
    const prompt = behavior.instructions + (meal
     ? `\n\nAccepted meal reference (revision ${session.meal_revision}): The customer explicitly saved this prior Snap reply as the active meal. It is a chosen plan, not evidence that any cooking step occurred.\n${meal.text.slice(0, 4000)}`
-     : '') + (behavior.version === NEXT_FLOW_BEHAVIOR_VERSION && session.meal_plan_json
+     : '') + (isNextFlow(behavior.version) && session.meal_plan_json
      ? `\n\nCurrent application-accepted meal and shopping state (revision ${session.meal_revision}):\n${session.meal_plan_json.slice(0, 6000)}\nChecked shopping items are held or assumed as labeled, not proof of cooking.` : '') + (imageAddendum
     ? '\n\nFor a food photo, distinguish visible details from likely interpretation. Ask when a hidden ingredient or preparation choice changes the reconstruction. A photo cannot prove allergens or exact ingredients. Continue the same open culinary conversation.'
-    : '');
+    : '') + equipment.text + (behavior.version === COOKING_BEHAVIOR_VERSION && session.meal_plan_json
+    ? cookingContext(session) : '');
   const callId = crypto.randomUUID();
   if (!await claimTurnOperation(env, id, turnId, revision, callId)) {
     const outcome = await turnResult(env, id, turnId);
@@ -891,7 +999,7 @@ async function streamTurn(request, env, ctx, id) {
     .bind(callId, id, turnId, revision, requestedAt, model,
       imageAddendum ? `${behavior.version}+image-v1` : behavior.version,
       isStage1b(env) ? 'stage1b-context-v1' : CONTEXT_VERSION,
-      effort, session.customer_context, 'none — no memory store in Stage 1B', '[]',
+      effort, session.customer_context, equipment.memory, '[]',
        JSON.stringify(imageIds), session.meal_plan_json?.slice(0, 6000) ?? meal?.text.slice(0, 4000) ?? null,
       meal ? session.meal_revision : null).run();
 
@@ -908,7 +1016,8 @@ async function streamTurn(request, env, ctx, id) {
               method: 'POST',
               headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
                body: JSON.stringify({ model, instructions: prompt, input: messages, reasoning: { effort },
-                 ...(behavior.version === NEXT_FLOW_BEHAVIOR_VERSION ? { tools: [MEAL_PLAN_TOOL], tool_choice: 'auto' } : {}),
+                 ...(isNextFlow(behavior.version) ? { tools: toolsFor(behavior.version),
+                   tool_choice: behavior.version === COOKING_BEHAVIOR_VERSION && session.cooking_progress_json ? 'required' : 'auto' } : {}),
                  max_output_tokens: 4096, store: false, stream: true }),
             });
             if (provider.ok) break;
@@ -948,11 +1057,31 @@ async function streamTurn(request, env, ctx, id) {
           }
            if (buffer.trim()) frame(buffer);
            if (!completed) throw new Error('INCOMPLETE_STREAM');
-           const proposed = behavior.version === NEXT_FLOW_BEHAVIOR_VERSION
+           const proposed = isNextFlow(behavior.version)
              ? planFromOutput(completed.output) : { plan: null, reason: null, calls: [] };
+           const cookingProposal = behavior.version === COOKING_BEHAVIOR_VERSION
+             ? cookingFromOutput(completed.output, accepted.text) : { cooking: null, reason: null, calls: [] };
+           if (cookingProposal.cooking && !session.meal_plan_json) {
+             cookingProposal.cooking = null;
+             cookingProposal.reason = 'NO_ACTIVE_PLAN';
+           }
+           if (proposed.plan && cookingProposal.cooking) {
+             proposed.plan = null;
+             cookingProposal.cooking = null;
+             cookingProposal.reason = 'CONFLICTING_STATE_PROPOSALS';
+           }
            let toolOnlyTransition = false;
            if (!text && proposed.plan) {
              text = `Perfect. I got you from here. ${proposed.plan.meal}. Let's make sure you have everything.`;
+             toolOnlyTransition = true;
+             const elapsed = Math.round(performance.now() - started);
+             firstTextMs = elapsed;
+             firstUsefulMs = elapsed;
+             firstUsefulExcerpt = text.slice(0, 400);
+             sendSse(controller, { type: 'delta', text });
+           }
+           if (!text && cookingProposal.cooking) {
+             text = cookingProposal.cooking.current_action;
              toolOnlyTransition = true;
              const elapsed = Math.round(performance.now() - started);
              firstTextMs = elapsed;
@@ -972,7 +1101,12 @@ async function streamTurn(request, env, ctx, id) {
            const assistantId = crypto.randomUUID();
            const assistantAt = now();
            const planJson = proposed.plan ? JSON.stringify(proposed.plan) : null;
-           const toolCalls = proposed.calls.map(call => ({ name: call.name, arguments: call.arguments }));
+           const toolCalls = [...proposed.calls, ...cookingProposal.calls].map(call => ({ name: call.name, arguments: call.arguments }));
+           const cookingJson = cookingProposal.cooking && session.meal_plan_json
+             ? nextCookingState(session, cookingProposal.cooking, assistantId, turnId, assistantAt) : null;
+           const cookingEventId = crypto.randomUUID();
+           const equipmentName = cookingProposal.cooking?.equipment_change?.name.toLocaleLowerCase() ?? null;
+           const equipmentStatus = cookingProposal.cooking?.equipment_change?.status ?? null;
            const write = await env.DB.batch([
             env.DB.prepare(`INSERT INTO turns (id,session_id,revision,role,text,created_at,model_call_id)
               SELECT ?,s.id,?,'assistant',?,?,? FROM sessions s JOIN turn_operations o
@@ -1002,7 +1136,8 @@ async function streamTurn(request, env, ctx, id) {
                  JSON.stringify({ model_call_id: callId, assistant_turn_id: null }), callId),
              ...(planJson ? [
                env.DB.prepare(`UPDATE sessions SET meal_revision=meal_revision+1,meal_source_turn_id=?,
-                 meal_accepted_at=?,meal_plan_json=?,shopping_revision=shopping_revision+1,updated_at=?
+                 meal_accepted_at=?,meal_plan_json=?,shopping_revision=shopping_revision+1,
+                 ${behavior.version === COOKING_BEHAVIOR_VERSION ? 'cooking_revision=cooking_revision+1,cooking_progress_json=NULL,' : ''}updated_at=?
                  WHERE id=? AND revision=? AND EXISTS
                  (SELECT 1 FROM turns WHERE id=? AND model_call_id=?)`)
                  .bind(assistantId, assistantAt, planJson, assistantAt, id, revision, assistantId, callId),
@@ -1014,11 +1149,41 @@ async function streamTurn(request, env, ctx, id) {
                      item_count: proposed.plan.sections.reduce((n, section) => n + section.items.length, 0) }),
                    assistantId, callId),
              ] : []),
+             ...(cookingJson ? [
+               env.DB.prepare(`UPDATE sessions SET cooking_revision=cooking_revision+1,
+                 cooking_progress_json=?,updated_at=? WHERE id=? AND revision=? AND meal_revision=?
+                 AND cooking_revision=? AND meal_plan_json IS NOT NULL AND EXISTS
+                 (SELECT 1 FROM turns WHERE id=? AND model_call_id=?)`)
+                 .bind(cookingJson, assistantAt, id, revision, session.meal_revision,
+                   session.cooking_revision ?? 0, assistantId, callId),
+               env.DB.prepare(`INSERT INTO state_events (id,session_id,turn_id,revision,kind,at,details_json)
+                 SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM sessions WHERE id=? AND revision=?
+                   AND cooking_revision=? AND json_extract(cooking_progress_json,'$.current_action_turn_id')=?)`)
+                 .bind(cookingEventId, id, turnId, revision, 'cooking_progress_accepted', assistantAt,
+                   JSON.stringify({ model_call_id: callId, assistant_turn_id: assistantId,
+                     customer_reported: Boolean(cookingProposal.cooking.customer_report),
+                     equipment_change: equipmentName ? { name: equipmentName, status: equipmentStatus } : null,
+                     ignored_fields: cookingProposal.cooking.ignored_fields,
+                     cooking_revision: (session.cooking_revision ?? 0) + 1 }),
+                   id, revision, (session.cooking_revision ?? 0) + 1, assistantId),
+               ...(equipmentName && session.customer_id ? [env.DB.prepare(`INSERT INTO customer_equipment
+                 (customer_id,name,status,source_session_id,source_turn_id,created_at,expires_at)
+                 SELECT ?,?,?,?,?,?,s.expires_at FROM sessions s WHERE s.id=? AND EXISTS
+                 (SELECT 1 FROM state_events WHERE id=? AND kind='cooking_progress_accepted')
+                 ON CONFLICT(customer_id,name) DO UPDATE SET status=excluded.status,
+                 source_session_id=excluded.source_session_id,source_turn_id=excluded.source_turn_id,
+                 created_at=excluded.created_at,expires_at=excluded.expires_at`)
+                 .bind(session.customer_id, equipmentName, equipmentStatus, id, turnId, assistantAt, id, cookingEventId)] : []),
+             ] : []),
              ...(proposed.reason ? [env.DB.prepare(`INSERT INTO state_events
                (id,session_id,turn_id,revision,kind,at,details_json)
                VALUES (?,?,?,?,?,?,?)`).bind(crypto.randomUUID(), id, turnId, revision,
                  'meal_plan_proposal_rejected', assistantAt,
                  JSON.stringify({ model_call_id: callId, reason: proposed.reason }))] : []),
+             ...(cookingProposal.reason ? [env.DB.prepare(`INSERT INTO state_events
+               (id,session_id,turn_id,revision,kind,at,details_json) VALUES (?,?,?,?,?,?,?)`)
+               .bind(crypto.randomUUID(), id, turnId, revision, 'cooking_proposal_rejected', assistantAt,
+                 JSON.stringify({ model_call_id: callId, reason: cookingProposal.reason }))] : []),
              ...(toolOnlyTransition ? [env.DB.prepare(`INSERT INTO state_events
                (id,session_id,turn_id,revision,kind,at,details_json)
                VALUES (?,?,?,?,?,?,?)`).bind(crypto.randomUUID(), id, turnId, revision,
@@ -1148,6 +1313,8 @@ export default {
       env.DB.prepare('DELETE FROM voice_sessions WHERE session_id IN (SELECT id FROM sessions WHERE expires_at<=?)').bind(at),
       env.DB.prepare('DELETE FROM return_reminders WHERE session_id IN (SELECT id FROM sessions WHERE expires_at<=?)').bind(at),
       env.DB.prepare('DELETE FROM push_subscriptions WHERE expires_at<=?').bind(at),
+      ...(env.BEHAVIOR_VERSION === COOKING_BEHAVIOR_VERSION
+        ? [env.DB.prepare('DELETE FROM customer_equipment WHERE expires_at<=?').bind(at)] : []),
     ] : [];
     await env.DB.batch([
       ...stage1bExpiry,

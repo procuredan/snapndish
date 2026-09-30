@@ -153,6 +153,15 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 - **Depends / reconsider:** Fixed and held-out culinary comparisons, local regression tests, additive Stage 1B D1 migration, isolated staging rendered text and voice journey, exact rollback, PM review. Production still requires separate explicit authorization.
 - **Supersedes:** `SNDISH-015` only where its earlier narrow Stage 1B scope excluded this explicitly approved shopping-flow proof. All five original capability proofs and their evidence remain in force.
 
+### SNDISH-017 — Cooking Mode choreography on isolated Stage 1B staging
+
+- **Date / owner:** 2026-09-30; Snap n Dish product owner, via the Cooking Mode Choreography instruction.
+- **Decision:** Extend the existing Stage 1B next-flow experiment through cooking on its isolated staging Worker. After shopping is complete, Snap gives one coherent current action, waits for customer reports, and proposes the next action through the same culinary model and conversation. The application conditionally accepts a versioned current action, customer-reported progress, and explicitly reported equipment facts; neither model instructions nor elapsed time prove completion. Keep the full meal and remaining components available under More. Talk It and Write It share the accepted state. Preserve Stage 1A and the prior Stage 1B behavior version for rollback.
+- **Reason:** Owner testing found that the complete meal plan became an oversized cooking response. The approved choreography keeps execution simple for the customer while retaining the complete meal internally.
+- **Excluded alternative:** A rigid cooking wizard, recipe engine, deterministic culinary task graph, second model/router, commercial memory, schedule forecasting, grocery commerce, or rollout to `app.snapndish.com`.
+- **Depends / reconsider:** Fixed and held-out live culinary probes, local regression and CI, additive Stage 1B migration, a known Worker and D1 recovery point, staging rendered conversation and voice evidence, owner review before any broader promotion. A strict example sequence is a product behavior target, not a recipe answer key.
+- **Supersedes:** `SNDISH-015` only where its earlier narrow Stage 1B scope excluded this explicitly approved cooking choreography experiment. Other Stage 1B proof and production boundaries remain.
+
 ## Open decisions — no authority may be invented
 
 1. Stage 1A quality result and owner benchmark/human review; the current prototype tests are not that decision.
