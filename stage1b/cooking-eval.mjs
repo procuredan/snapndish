@@ -1,8 +1,8 @@
 import fs from 'node:fs';
-import { instructionsFor, instructionsForNextFlow, instructionsForCookingMode,
+import { instructionsFor, instructionsForNextFlow, instructionsForCookingMode, instructionsForCookingModeV2,
   estimateUsd } from '../src/config.ts';
 import { MEAL_PLAN_TOOL } from '../live-lab/meal-plan.mjs';
-import { COOKING_PROGRESS_TOOL, cookingFromOutput } from '../live-lab/cooking-progress.mjs';
+import { COOKING_PROGRESS_TOOL, COOKING_PROGRESS_TOOL_V2, cookingFromOutput } from '../live-lab/cooking-progress.mjs';
 
 if (!process.env.OPENAI_API_KEY) throw Error('OPENAI_API_KEY is not configured');
 const model = process.env.MODEL || 'gpt-6-astra';
@@ -26,6 +26,16 @@ const cases = [
     turns: ['The beef is burning.'] },
   { id: 'cooking-cold-wok-held-out', initialAction: 'Heat the wok for the beef strips; tell me when it is hot.',
     turns: ["The wok isn't getting hot."] },
+  { id: 'full-plan-no-routine-ack', turns: ["Let's cook.", 'Can I use my rice cooker for the rice?'] },
+  { id: 'full-plan-recovery', turns: ["Let's cook.", "I don't have rice vinegar and the rice isn't done yet."] },
+  { id: 'equipment-multiple-options', priorAssistant: 'For the stir-fry, do you have a wok or a skillet?',
+    turns: ['I have both.'] },
+  { id: 'equipment-repeated-answer', priorTurns: [
+    { role: 'assistant', content: 'For the stir-fry, do you have a wok or a skillet?' },
+    { role: 'user', content: 'Both.' },
+    { role: 'assistant', content: 'Which one do you have?' },
+  ],
+    turns: ['Both are available.'] },
 ];
 const arms = [
   { id: 'foundation', instructions: instructionsFor('A', ''), tools: [] },
@@ -33,6 +43,7 @@ const arms = [
   { id: 'cooking-v1', tools: [MEAL_PLAN_TOOL, COOKING_PROGRESS_TOOL] },
   { id: 'cooking-required', tools: [MEAL_PLAN_TOOL, COOKING_PROGRESS_TOOL], toolChoice: 'required' },
   { id: 'cooking-forced', tools: [MEAL_PLAN_TOOL, COOKING_PROGRESS_TOOL], toolChoice: { type: 'function', name: 'update_cooking_progress' } },
+  { id: 'cooking-v2', tools: [MEAL_PLAN_TOOL, COOKING_PROGRESS_TOOL_V2], toolChoice: 'auto' },
 ];
 
 async function call(instructions, input, tools, toolChoice = 'auto') {
@@ -83,6 +94,8 @@ for (const scenario of cases.filter(x => !process.env.COOKING_EVAL_CASES ||
   process.env.COOKING_EVAL_ARMS.split(',').includes(x.id))) {
   const messages = [{ role: 'user', content: `We selected ${meal.meal} for four. Shopping is complete. I own a rice cooker. Here is the consolidated meal and ingredient plan: ${JSON.stringify(meal)}` },
     { role: 'assistant', content: 'Perfect. I got you from here. The complete meal and shopping list are ready.' }];
+  if (scenario.priorAssistant) messages.push({ role: 'assistant', content: scenario.priorAssistant });
+  if (scenario.priorTurns) messages.push(...scenario.priorTurns);
   let cookingProgress = scenario.initialAction ? { current_action: scenario.initialAction,
     remaining_components: ['Beef', 'Vegetables', 'Citrus side salad'], reports: [] } : null;
   if (scenario.initialAction) messages.push({ role: 'assistant', content: scenario.initialAction });
@@ -91,7 +104,8 @@ for (const scenario of cases.filter(x => !process.env.COOKING_EVAL_CASES ||
     const state = arm.id.startsWith('cooking-') ? `\n\nApplication-accepted cooking progress: ${JSON.stringify(cookingProgress)}. Only customer reports count as actual progress.` : '';
     try {
       const instructions = arm.id.startsWith('cooking-')
-        ? instructionsForCookingMode('Owns a rice cooker.', true, Boolean(cookingProgress)) : arm.instructions;
+        ? (arm.id === 'cooking-v2' ? instructionsForCookingModeV2 : instructionsForCookingMode)
+          ('Owns a rice cooker.', true, Boolean(cookingProgress)) : arm.instructions;
       const toolChoice = arm.id === 'cooking-required' && !cookingProgress ? 'auto' : arm.toolChoice;
       const response = await call(instructions + `\n\nCurrent application-accepted meal and shopping state: ${JSON.stringify(meal)}. Shopping is complete.` + state,
         messages, arm.tools, toolChoice);
@@ -106,11 +120,13 @@ for (const scenario of cases.filter(x => !process.env.COOKING_EVAL_CASES ||
           fullMs: record.fullMs, outputTypes: record.partialOutput.map(x => x.type) }) + '\n');
         break;
       }
-      const cooking = arm.id.startsWith('cooking-') ? cookingFromOutput(response.output, userText) : { cooking: null, reason: null, calls: [] };
+      const cooking = arm.id.startsWith('cooking-') ? cookingFromOutput(response.output, userText,
+        arm.id === 'cooking-v2' && !cookingProgress?.full_plan) : { cooking: null, reason: null, calls: [] };
       const planCalls = response.output.filter(x => x.type === 'function_call' && x.name === 'publish_meal_plan');
       if (cooking.cooking) {
         cookingProgress = { current_action: cooking.cooking.current_action,
           remaining_components: cooking.cooking.remaining_components ?? cookingProgress?.remaining_components ?? [],
+          full_plan: cooking.cooking.full_plan ?? cookingProgress?.full_plan ?? null,
           reports: [...(cookingProgress?.reports ?? []), ...(cooking.cooking.customer_report
             ? [cooking.cooking.customer_report] : [])] };
       }

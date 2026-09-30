@@ -162,6 +162,15 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 - **Depends / reconsider:** Fixed and held-out live culinary probes, local regression and CI, additive Stage 1B migration, a known Worker and D1 recovery point, staging rendered conversation and voice evidence, owner review before any broader promotion. A strict example sequence is a product behavior target, not a recipe answer key.
 - **Supersedes:** `SNDISH-015` only where its earlier narrow Stage 1B scope excluded this explicitly approved cooking choreography experiment. Other Stage 1B proof and production boundaries remain.
 
+### SNDISH-018 — Full-plan cooking with optional progress reports
+
+- **Date / owner:** 2026-09-30; Snap n Dish product owner, after real cooking testing.
+- **Decision:** Replace the mandatory action/acknowledgement cadence from SNDISH-017. Show the complete coordinated meal plan visually under More / Full Plan and emphasize useful Now guidance in the same conversation. Talk It and Write It remain available as Ask Snap. Group compatible preparation work so the customer can follow along at their own pace without repeatedly reporting “done.” Ask for input only when equipment, doneness, a physical wait, a problem/substitution, timing, or an explicit pause materially changes the next step. The application may accept a new Now section or revised plan without recording physical completion; only supported customer reports become progress facts. Preserve the owner-reported repeated equipment-answer failure as a general conversational regression, not a word-specific rule. Test this revision only on isolated Stage 1B staging; preserve v1 and Stage 1A.
+- **Reason:** Real cooking exposed excessive required interactions. The full plan must be visible while Snap guides the current moment and the customer controls pace.
+- **Excluded alternative:** Mandatory acknowledgement after routine prep, treating displayed guidance as completed action, a rigid cooking task graph, recipe engine, extra synchronous model, or deployment to `app.snapndish.com`.
+- **Depends / reconsider:** Fixed and held-out culinary probes, state/currentness tests, a rendered staging journey, target-device voice quality, observed latency/cost, owner review and separate authorization for any broader release. A full-plan proposal remains free-form and versioned; shopping and physical progress remain separate state.
+- **Supersedes:** SNDISH-017 only where it requires one current action followed by a customer report before Snap can continue, or discourages display of the complete plan. Its authority, safety, isolation and recovery boundaries remain.
+
 ## Open decisions — no authority may be invented
 
 1. Stage 1A quality result and owner benchmark/human review; the current prototype tests are not that decision.

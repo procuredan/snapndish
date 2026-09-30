@@ -20,6 +20,25 @@ export const COOKING_PROGRESS_TOOL = {
   },
 };
 
+export const COOKING_PROGRESS_TOOL_V2 = {
+  ...COOKING_PROGRESS_TOOL,
+  description: 'Propose the complete coordinated cooking plan for the visual Full Plan view and the useful Now section. Reports of physical progress require explicit customer evidence. The application decides what becomes current state.',
+  parameters: {
+    ...COOKING_PROGRESS_TOOL.parameters,
+    properties: {
+      ...COOKING_PROGRESS_TOOL.parameters.properties,
+      current_action: { type: 'string', description: 'Useful Now guidance or a material question. May group compatible preparation actions; never require acknowledgements for routine actions. Not evidence that they happened.' },
+      full_plan: { type: ['array', 'null'], description: 'Complete coordinated cooking plan for every component, in free-form named sections, for visual display. Required when cooking first starts; null on later turns unless the plan materially changes. Do not read it aloud.', items: {
+        type: 'object', properties: {
+          title: { type: 'string', description: 'Short free-form component or section name.' },
+          directions: { type: 'string', description: 'Usable quantities, technique, and dependencies for this section. No mandatory check-in after routine work.' },
+        }, required: ['title', 'directions'], additionalProperties: false,
+      } },
+    },
+    required: [...COOKING_PROGRESS_TOOL.parameters.required, 'full_plan'],
+  },
+};
+
 function supportedQuote(quote, latestUserText) {
   return typeof quote === 'string' && quote.trim().length > 0 && quote.length <= 300 &&
     latestUserText.toLocaleLowerCase().includes(quote.trim().toLocaleLowerCase());
@@ -29,7 +48,7 @@ function readinessOnly(quote) {
   return /^(?:let['’]?s cook|ready to cook|let['’]?s start|start cooking|begin cooking)[.!]?$/i.test(quote.trim());
 }
 
-export function normalizeCookingProposal(raw, latestUserText) {
+export function normalizeCookingProposal(raw, latestUserText, requireFullPlan = false) {
   let value;
   try { value = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return null; }
   if (!value || typeof value !== 'object' || typeof value.current_action !== 'string' ||
@@ -40,6 +59,15 @@ export function normalizeCookingProposal(raw, latestUserText) {
       value.remaining_components.some(x => typeof x !== 'string' || !x.trim() || x.length > 100)) return null;
     remaining = value.remaining_components.map(x => x.trim());
   }
+  let fullPlan = null;
+  if (value.full_plan !== undefined && value.full_plan !== null) {
+    if (!Array.isArray(value.full_plan) || value.full_plan.length < 2 || value.full_plan.length > 10 ||
+      value.full_plan.some(x => !x || typeof x.title !== 'string' || !x.title.trim() || x.title.length > 80 ||
+        typeof x.directions !== 'string' || !x.directions.trim() || x.directions.length > 1400)) return null;
+    fullPlan = value.full_plan.map(x => ({ title: x.title.trim(), directions: x.directions.trim() }));
+    if (JSON.stringify(fullPlan).length > 7000) return null;
+  }
+  if (requireFullPlan && !fullPlan) return null;
   const ignoredFields = [];
   let report = null;
   if (value.customer_report !== undefined && value.customer_report !== null) {
@@ -56,13 +84,13 @@ export function normalizeCookingProposal(raw, latestUserText) {
       !e.quote.toLocaleLowerCase().includes(e.name.trim().toLocaleLowerCase())) ignoredFields.push('equipment_change');
     else equipment = { name: e.name.trim(), status: e.status, quote: e.quote.trim() };
   }
-  return { current_action: value.current_action.trim(), remaining_components: remaining,
+  return { current_action: value.current_action.trim(), remaining_components: remaining, full_plan: fullPlan,
     customer_report: report, equipment_change: equipment, ignored_fields: ignoredFields };
 }
 
-export function cookingFromOutput(output, latestUserText) {
+export function cookingFromOutput(output, latestUserText, requireFullPlan = false) {
   const calls = (output || []).filter(item => item.type === 'function_call' && item.name === COOKING_PROGRESS_TOOL.name);
   if (calls.length !== 1) return { cooking: null, reason: calls.length ? 'MULTIPLE_COOKING_CALLS' : null, calls };
-  const cooking = normalizeCookingProposal(calls[0].arguments, latestUserText);
+  const cooking = normalizeCookingProposal(calls[0].arguments, latestUserText, requireFullPlan);
   return { cooking, reason: cooking ? null : 'INVALID_COOKING_PROPOSAL', calls };
 }
