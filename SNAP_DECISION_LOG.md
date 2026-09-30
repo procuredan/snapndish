@@ -171,6 +171,15 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 - **Depends / reconsider:** Fixed and held-out culinary probes, state/currentness tests, a rendered staging journey, target-device voice quality, observed latency/cost, owner review and separate authorization for any broader release. A full-plan proposal remains free-form and versioned; shopping and physical progress remain separate state.
 - **Supersedes:** SNDISH-017 only where it requires one current action followed by a customer report before Snap can continue, or discourages display of the complete plan. Its authority, safety, isolation and recovery boundaries remain.
 
+### SNDISH-019 — Bounded conversation/application bridge repair on isolated staging
+
+- **Date / owner:** 2026-09-30; Snap n Dish product owner, after Astra Ultra reviewed the real Stage 1B handoff failure.
+- **Decision:** Repair the existing two-operation bridge only. The primary culinary response may propose `publish_meal_plan` or `update_cooking_progress`; the backend validates and commits the proposal before the client gives the model its actual tool result and asks for a bounded spoken continuation. Use one canonical array representation for the complete cooking plan and remaining components. Accepted meal state opens Shopping inline; first accepted cooking state emphasizes Now while leaving Full Plan visible. Guard model-driven state changes against newer shopping edits and record browser-observed Shopping/Now timing. Preserve discovery breadth, current conversation, physical-progress evidence rules, and optional customer interaction during cooking.
+- **Reason:** In a real owner conversation the meal and shopping list were accepted but hidden, repeated cooking proposals used incompatible string fields and were rejected, and browser voice synchronization referenced an undeclared variable. The resulting conversational filler did not complete the customer-facing action.
+- **Excluded alternative:** Intent classifier, exclusive conversation states, additional culinary model, generic action bus, extra application tools, taxonomy, phrase-specific repair, required cooking acknowledgements, or Stage 1A changes. Equipment memory learned during planning and spoken shopping edits remain future bounded decisions.
+- **Depends / reconsider:** Exact failure retained in private evaluation evidence; local endpoint and real-browser tests, fixed/held-out culinary checks, additive Stage 1B-only migration, CI, isolated staging rendered verification, owner testing, and a known Stage 1B code rollback. A provider may still emit premature speech before a tool call in Realtime; target-device owner testing must verify spoken ordering rather than infer it from the prompt.
+- **Supersedes:** None. This is a bounded repair under SNDISH-018, not a Stage 1B scope expansion or production authorization.
+
 ## Open decisions — no authority may be invented
 
 1. Stage 1A quality result and owner benchmark/human review; the current prototype tests are not that decision.

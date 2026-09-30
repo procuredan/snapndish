@@ -6,7 +6,7 @@ export const COOKING_PROGRESS_TOOL = {
     type: 'object',
     properties: {
       current_action: { type: 'string', description: 'The one useful action or question for the customer now, with relevant quantities and checkpoint. Never a complete recipe.' },
-      remaining_components: { type: ['array', 'null'], items: { type: 'string' }, description: 'Brief component names for the optional More view, not instructions. Use null if unchanged.' },
+      remaining_components: { type: ['array', 'null'], items: { type: 'string' }, description: 'JSON ARRAY of brief component names for the optional More view, never a prose string. Use null if unchanged.' },
       customer_report: { type: ['object', 'null'], description: 'Null unless the latest customer message reports a cooking outcome, problem, or completed/started action. Readiness to cook is not progress.', properties: {
         quote: { type: 'string', description: 'Exact words from the latest customer message supporting this progress update.' },
         understood_as: { type: 'string', description: 'What the customer reports actually happened; do not infer completion from Snap instructions.' },
@@ -22,13 +22,14 @@ export const COOKING_PROGRESS_TOOL = {
 
 export const COOKING_PROGRESS_TOOL_V2 = {
   ...COOKING_PROGRESS_TOOL,
+  strict: true,
   description: 'Propose the complete coordinated cooking plan for the visual Full Plan view and the useful Now section. Reports of physical progress require explicit customer evidence. The application decides what becomes current state.',
   parameters: {
     ...COOKING_PROGRESS_TOOL.parameters,
     properties: {
       ...COOKING_PROGRESS_TOOL.parameters.properties,
       current_action: { type: 'string', description: 'Useful Now guidance or a material question. May group compatible preparation actions; never require acknowledgements for routine actions. Not evidence that they happened.' },
-      full_plan: { type: ['array', 'null'], description: 'Complete coordinated cooking plan for every component, in free-form named sections, for visual display. Required when cooking first starts; null on later turns unless the plan materially changes. Do not read it aloud.', items: {
+      full_plan: { type: ['array', 'null'], description: 'JSON ARRAY of section objects, never a prose string. Complete coordinated cooking plan for every component, in free-form named sections, for visual display. Required when cooking first starts; null on later turns unless the plan materially changes. Do not read it aloud.', items: {
         type: 'object', properties: {
           title: { type: 'string', description: 'Short free-form component or section name.' },
           directions: { type: 'string', description: 'Usable quantities, technique, and dependencies for this section. No mandatory check-in after routine work.' },
@@ -91,6 +92,16 @@ export function normalizeCookingProposal(raw, latestUserText, requireFullPlan = 
 export function cookingFromOutput(output, latestUserText, requireFullPlan = false) {
   const calls = (output || []).filter(item => item.type === 'function_call' && item.name === COOKING_PROGRESS_TOOL.name);
   if (calls.length !== 1) return { cooking: null, reason: calls.length ? 'MULTIPLE_COOKING_CALLS' : null, calls };
+  let candidate;
+  try { candidate = JSON.parse(calls[0].arguments); }
+  catch { return { cooking: null, reason: 'COOKING_ARGUMENTS_NOT_JSON', calls }; }
+  const shapeErrors = [];
+  if (candidate?.full_plan != null && !Array.isArray(candidate.full_plan))
+    shapeErrors.push('full_plan must be an array of {title,directions} sections');
+  if (candidate?.remaining_components != null && !Array.isArray(candidate.remaining_components))
+    shapeErrors.push('remaining_components must be an array of component names');
+  if (shapeErrors.length) return { cooking: null, reason: shapeErrors.join('; '), calls };
   const cooking = normalizeCookingProposal(calls[0].arguments, latestUserText, requireFullPlan);
-  return { cooking, reason: cooking ? null : 'INVALID_COOKING_PROPOSAL', calls };
+  return { cooking, reason: cooking ? null : requireFullPlan && !candidate?.full_plan
+    ? 'full_plan is required when cooking first starts' : 'INVALID_COOKING_PROPOSAL', calls };
 }

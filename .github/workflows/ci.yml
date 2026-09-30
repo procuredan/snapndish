@@ -19,4 +19,6 @@ jobs:
         with:
           node-version: 24
       - run: npm test
+        env:
+          SNAP_BROWSER_TEST: '1'
       - run: npm run preflight
