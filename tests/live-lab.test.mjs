@@ -511,7 +511,12 @@ test('Stage 1B spoken transcript uses the same context, stores usage, and reject
     { ...replyInput, responseId: 'resp_voice_late' }, cookie), e, context());
   assert.equal((await late.json()).status, 'stale_rejected');
   assert.equal(e.DB.raw.prepare("SELECT COUNT(*) AS n FROM turns WHERE role='assistant'").get().n, 1);
-  await worker.fetch(req(`/api/sessions/${id}/voice/stop`, 'POST', { voiceSessionId: voiceId }, cookie), e, context());
+  assert.equal((await worker.fetch(req(`/api/sessions/${id}/voice/stop`, 'POST',
+    { voiceSessionId: voiceId, failureCode: 'raw customer speech' }, cookie), e, context())).status, 400);
+  await worker.fetch(req(`/api/sessions/${id}/voice/stop`, 'POST',
+    { voiceSessionId: voiceId, failureCode: 'EMPTY_TRANSCRIPT' }, cookie), e, context());
+  assert.equal(e.DB.raw.prepare('SELECT error_code FROM voice_sessions WHERE id=?').get(voiceId).error_code,
+    'EMPTY_TRANSCRIPT');
   const stopped = await (await worker.fetch(req(`/api/sessions/${id}`, 'GET', undefined, cookie), e, context())).json();
   assert.equal(stopped.active_voice_id, null);
   assert.equal((await worker.fetch(req(`/api/sessions/${id}/voice/events`, 'POST',

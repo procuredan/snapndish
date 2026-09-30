@@ -665,9 +665,12 @@ async function stopVoice(request, env, id) {
   const input = await bodyJson(request);
   const voiceId = input.voiceSessionId, at = now();
   if (typeof voiceId !== 'string' || !/^[0-9a-f-]{36}$/i.test(voiceId)) return json({ error: 'INVALID_VOICE_SESSION' }, 400);
+  const failureCode = input.failureCode == null ? null : input.failureCode;
+  if (failureCode !== null && (typeof failureCode !== 'string' || !/^[A-Z_0-9]{3,64}$/.test(failureCode)))
+    return json({ error: 'INVALID_VOICE_FAILURE_CODE' }, 400);
   await env.DB.batch([
-    env.DB.prepare('UPDATE voice_sessions SET closed_at=? WHERE id=? AND session_id=? AND closed_at IS NULL')
-      .bind(at, voiceId, id),
+    env.DB.prepare('UPDATE voice_sessions SET closed_at=?,error_code=COALESCE(?,error_code) WHERE id=? AND session_id=? AND closed_at IS NULL')
+      .bind(at, failureCode, voiceId, id),
     env.DB.prepare('UPDATE sessions SET active_voice_id=NULL,active_voice_until=NULL WHERE id=? AND active_voice_id=?')
       .bind(id, voiceId),
   ]);
