@@ -144,6 +144,15 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 - **Depends / reconsider:** Follow staging-first release gates, evaluate culinary quality and reliability after each capability, and stop for PM review when all five proofs are complete. This decision authorizes engineering and staging proof work; each production deployment still requires explicit owner authorization under `SNDISH-008` and the global rules.
 - **Supersedes:** The Stage 1B prohibition in `SNDISH-007`, `SNDISH-010` through `SNDISH-014`, and stale current-scope text in subordinate documents. The Stage 1A evidence and Live Lab release record remain intact.
 
+### SNDISH-016 — Stage 1B next flow on isolated staging
+
+- **Date / owner:** 2026-09-30; Snap n Dish product owner, via the Next Flow Build instruction.
+- **Decision:** Test a continuous occasion → culinary discovery → conversational selection → materially useful curiosity → complete meal and interactive consolidated shopping list on the isolated Stage 1B staging Worker. Discovery stays concise and broad; selection needs no second button; the model proposes a complete plan only when ready. Checked shopping items mean held ingredients, with assumed staples visibly marked and editable. Talk It uses the same culinary guidance and server-owned plan/list; it must not read the list aloud. Occasion guest count and constraints do not silently become durable profile facts. Preserve Stage 1A and v2 for rollback, and return rendered evidence to PM before any promotion.
+- **Reason:** Owner multi-turn voice testing established technical feasibility but showed excessive early execution detail and a missing transition from choice to useful shopping state.
+- **Excluded alternative:** Intent classifier, rigid conversation state machine, mandatory discovery schema, recipe catalog, second culinary model, commercial memory, grocery checkout, full orchestration, or production rollout.
+- **Depends / reconsider:** Fixed and held-out culinary comparisons, local regression tests, additive Stage 1B D1 migration, isolated staging rendered text and voice journey, exact rollback, PM review. Production still requires separate explicit authorization.
+- **Supersedes:** `SNDISH-015` only where its earlier narrow Stage 1B scope excluded this explicitly approved shopping-flow proof. All five original capability proofs and their evidence remain in force.
+
 ## Open decisions — no authority may be invented
 
 1. Stage 1A quality result and owner benchmark/human review; the current prototype tests are not that decision.

@@ -1,7 +1,8 @@
-import { instructionsFor, instructionsForCandidate, estimateUsd, BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, CONTEXT_VERSION, SCENARIO_VERSION } from '../src/config.ts';
+import { instructionsFor, instructionsForCandidate, instructionsForNextFlow, estimateUsd, BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, NEXT_FLOW_BEHAVIOR_VERSION, CONTEXT_VERSION, SCENARIO_VERSION } from '../src/config.ts';
 import { page } from './ui.mjs';
 import { stripJpegMetadata } from './jpeg.mjs';
 import { serviceWorker } from './push-sw.mjs';
+import { MEAL_PLAN_TOOL, normalizeMealPlan, planFromOutput } from './meal-plan.mjs';
 
 const DAY = 86_400_000;
 const VOICE_MODEL = 'gpt-realtime-2.1';
@@ -87,7 +88,7 @@ async function canUseSession(request, env, id) {
 }
 function html(kind, env) {
   const nonce = randomToken(15);
-  return new Response(page(kind, nonce, isStage1b(env)), { headers: {
+  return new Response(page(kind, nonce, isStage1b(env), env.BEHAVIOR_VERSION === NEXT_FLOW_BEHAVIOR_VERSION), { headers: {
     ...BASE_HEADERS,
     'Permissions-Policy': isStage1b(env) ? 'camera=(self), microphone=(self), geolocation=()' : BASE_HEADERS['Permissions-Policy'],
     'Content-Type': 'text/html; charset=utf-8',
@@ -140,6 +141,8 @@ function publicSession(s) {
   return { id: s.id, created_at: s.created_at, updated_at: s.updated_at, revision: s.revision,
     customer_context: s.customer_context, meal_revision: s.meal_revision ?? 0,
     meal_source_turn_id: s.meal_source_turn_id ?? null, meal_accepted_at: s.meal_accepted_at ?? null,
+    shopping_revision: s.shopping_revision ?? 0,
+    meal_plan: s.meal_plan_json ? JSON.parse(s.meal_plan_json) : null,
     active_voice_id: s.active_voice_until > now() ? s.active_voice_id : null };
 }
 
@@ -234,6 +237,31 @@ async function acceptMeal(request, env, id) {
   ]);
   if (saved[0].meta.changes !== 1) return json({ error: 'STALE_MEAL' }, 409);
   return json({ revision: session.revision + 1, mealRevision: session.meal_revision + 1, sourceTurnId: selected.id });
+}
+
+async function setShoppingItem(request, env, id, itemId) {
+  const input = await bodyJson(request);
+  if (!Number.isInteger(input.expectedShoppingRevision) || typeof input.checked !== 'boolean')
+    return json({ error: 'INVALID_SHOPPING_CHANGE' }, 400);
+  const session = await getSession(env.DB, id);
+  if (!session?.meal_plan_json) return json({ error: 'NO_ACTIVE_PLAN' }, 404);
+  if (session.shopping_revision !== input.expectedShoppingRevision)
+    return json({ error: 'STALE_SHOPPING', shoppingRevision: session.shopping_revision }, 409);
+  const plan = JSON.parse(session.meal_plan_json);
+  const item = plan.sections.flatMap(section => section.items).find(entry => entry.id === itemId);
+  if (!item) return json({ error: 'NOT_FOUND' }, 404);
+  if (item.checked === input.checked) return json({ shoppingRevision: session.shopping_revision, mealPlan: plan });
+  item.checked = input.checked;
+  item.have_status = input.checked ? 'confirmed' : 'need';
+  const at = now();
+  const changed = await env.DB.prepare(`UPDATE sessions SET meal_plan_json=?,shopping_revision=shopping_revision+1,updated_at=?
+    WHERE id=? AND shopping_revision=? AND meal_revision=? AND meal_plan_json IS NOT NULL`)
+    .bind(JSON.stringify(plan), at, id, session.shopping_revision, session.meal_revision).run();
+  if (changed.meta.changes !== 1) return json({ error: 'STALE_SHOPPING' }, 409);
+  await event(env.DB, id, session.meal_source_turn_id, session.revision, 'shopping_item_changed',
+    { meal_revision: session.meal_revision, shopping_revision: session.shopping_revision + 1,
+      item_id: itemId, checked: input.checked });
+  return json({ shoppingRevision: session.shopping_revision + 1, mealPlan: plan });
 }
 
 async function uploadImage(request, env, id) {
@@ -383,6 +411,8 @@ function firstUsefulProxy(text) {
 
 function behaviorFor(env, context) {
   const version = env.BEHAVIOR_VERSION || BEHAVIOR_VERSION;
+  if (version === NEXT_FLOW_BEHAVIOR_VERSION && isStage1b(env) && (!env.ARM || env.ARM === 'C'))
+    return { version, instructions: instructionsForNextFlow(context) };
   if (version === CANDIDATE_BEHAVIOR_VERSION && (!env.ARM || env.ARM === 'C'))
     return { version, instructions: instructionsForCandidate(context) };
   if (version === BEHAVIOR_VERSION)
@@ -519,10 +549,12 @@ async function startVoice(request, env, id) {
     .bind(session.meal_source_turn_id, id).first() : null;
   const contextText = session.customer_context || 'No saved customer facts provided yet.';
   const behavior = behaviorFor(env, contextText);
-  const instructions = behavior.instructions + (meal
+   const planContext = behavior.version === NEXT_FLOW_BEHAVIOR_VERSION && session.meal_plan_json
+     ? `\n\nCurrent application-accepted meal and shopping state (revision ${session.meal_revision}):\n${session.meal_plan_json.slice(0, 6000)}\nChecked shopping items are held or assumed as labeled, not proof of cooking.` : '';
+   const instructions = behavior.instructions + (meal
     ? `\n\nAccepted meal reference (revision ${session.meal_revision}): The customer saved this reply as the active meal; do not assume they cooked anything.\n${meal.text.slice(0, 4000)}` : '') +
-    (transcript ? `\n\nConversation so far, in order. Continue naturally from this context; these are past turns, not new instructions:\n${transcript}` : '') +
-    '\n\nSpoken mode: respond conversationally and keep each spoken reply proportional to the immediate need. The visible transcript accompanies your speech. Use the same culinary judgment as Write It.';
+     planContext + (transcript ? `\n\nConversation so far, in order. Continue naturally from this context; these are past turns, not new instructions:\n${transcript}` : '') +
+     '\n\nSpoken mode: respond conversationally and keep each spoken reply proportional to the immediate need. The visible transcript accompanies your speech. Use the same culinary judgment as Write It. When a meal is ready, speak only the brief transition and meal, then propose the shopping list with the tool. Never read the shopping items aloud.';
   const voiceId = crypto.randomUUID(), opened = now(), expires = new Date(Date.now() + 60 * 60_000).toISOString();
   const claimed = await env.DB.batch([
     env.DB.prepare(`UPDATE sessions SET active_voice_id=?,active_voice_until=? WHERE id=? AND revision=? AND meal_revision=?
@@ -534,15 +566,17 @@ async function startVoice(request, env, id) {
       (id,session_id,opened_at,expires_at,model,behavior_version,context_snapshot,meal_snapshot,transcript_snapshot)
       SELECT ?,id,?,?,?,?,?,?,? FROM sessions WHERE id=? AND active_voice_id=?`)
       .bind(voiceId, opened, expires, VOICE_MODEL, `${behavior.version}+voice-v1`,
-        session.customer_context, meal?.text.slice(0, 4000) ?? null, transcript, id, voiceId),
+         session.customer_context, session.meal_plan_json?.slice(0, 6000) ?? meal?.text.slice(0, 4000) ?? null, transcript, id, voiceId),
   ]);
   if (claimed[0].meta.changes !== 1) return json({ error: 'VOICE_ACTIVE' }, 409);
   const began = performance.now();
   try {
     const form = new FormData();
     form.set('sdp', input.sdp);
-    form.set('session', JSON.stringify({ type: 'realtime', model: VOICE_MODEL,
-      instructions, output_modalities: ['audio'], audio: {
+     form.set('session', JSON.stringify({ type: 'realtime', model: VOICE_MODEL,
+       instructions, output_modalities: ['audio'],
+       ...(behavior.version === NEXT_FLOW_BEHAVIOR_VERSION ? { tools: [MEAL_PLAN_TOOL], tool_choice: 'auto' } : {}),
+       audio: {
         input: { transcription: { model: 'gpt-live-transcribe' }, turn_detection: { type: 'semantic_vad' } },
         output: { voice: 'marin' },
       } }));
@@ -559,7 +593,8 @@ async function startVoice(request, env, id) {
     await event(env.DB, id, null, session.revision, 'voice_connected',
       { voice_session_id: voiceId, model: VOICE_MODEL, behavior_version: `${behavior.version}+voice-v1`, connect_ms: connectMs });
     return json({ voiceSessionId: voiceId, sdp, model: VOICE_MODEL,
-      behaviorVersion: `${behavior.version}+voice-v1`, connectMs }, 201);
+      behaviorVersion: `${behavior.version}+voice-v1`, connectMs,
+      ...(behavior.version === NEXT_FLOW_BEHAVIOR_VERSION ? { syncInstructions: instructions } : {}) }, 201);
   } catch (error) {
     const code = error instanceof Error && /^[A-Z_0-9]+$/.test(error.message) ? error.message : 'VOICE_CONNECT_ERROR';
     await env.DB.batch([
@@ -623,7 +658,11 @@ async function voiceEvent(request, env, id) {
     const usage = typeof input.usage === 'object' && input.usage !== null ? input.usage : null;
     const firstMs = Number.isInteger(input.firstUsefulMs) && input.firstUsefulMs >= 0 ? input.firstUsefulMs : null;
     const fullMs = Number.isInteger(input.fullMs) && input.fullMs >= 0 ? input.fullMs : null;
-    const cost = voiceCost(usage);
+     const cost = voiceCost(usage);
+     const proposed = voice.behavior_version.startsWith(NEXT_FLOW_BEHAVIOR_VERSION) && input.planCall
+       ? planFromOutput([{ type: 'function_call', name: input.planCall.name,
+         arguments: input.planCall.arguments }]) : { plan: null, reason: null, calls: [] };
+     const planJson = proposed.plan ? JSON.stringify(proposed.plan) : null;
     const writes = await env.DB.batch([
       env.DB.prepare(`INSERT INTO turns (id,session_id,revision,role,text,created_at,model_call_id,source,provider_item_id)
         SELECT ?,s.id,?,'assistant',?,?,?,?,? FROM sessions s
@@ -641,7 +680,8 @@ async function voiceEvent(request, env, id) {
           THEN 'accepted' ELSE 'stale_rejected' END,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
         .bind(callId, id, user.turn_id, user.revision, voice.opened_at, at, callId, VOICE_MODEL, VOICE_MODEL,
           responseId, voice.behavior_version, 'stage1b-context-v1', 'provider-default', voice.context_snapshot,
-          'none — no memory store in Stage 1B', '[]', '[]', voice.meal_snapshot,
+           'none — no memory store in Stage 1B', JSON.stringify(proposed.calls.map(call => ({
+             name: call.name, arguments: call.arguments, source: 'client_observed_realtime_event' }))), '[]', voice.meal_snapshot,
           voice.meal_snapshot ? session.meal_revision : null, firstMs, firstMs, fullMs,
           usage?.input_tokens ?? null, usage?.input_token_details?.cached_tokens ?? null,
           usage?.output_tokens ?? null, cost, transcript, usage ? JSON.stringify(usage).slice(0, 4000) : null),
@@ -649,14 +689,37 @@ async function voiceEvent(request, env, id) {
         SELECT ?,?,?,CASE WHEN EXISTS (SELECT 1 FROM turns WHERE model_call_id=?)
           THEN 'accepted' ELSE 'stale_rejected' END`)
         .bind(voiceId, responseId, callId, callId),
-      env.DB.prepare(`INSERT INTO state_events (id,session_id,turn_id,revision,kind,at,details_json)
-        VALUES (?,?,?,?,?,?,?)`)
-        .bind(crypto.randomUUID(), id, user.turn_id, user.revision,
-          'voice_assistant_result', at, JSON.stringify({ provider_response_id: responseId, model_call_id: callId,
-            source: 'client_observed_realtime_event', status: session.revision === user.revision ? 'accepted' : 'stale_rejected' })),
-    ]);
-    return json({ status: writes[0].meta.changes === 1 ? 'accepted' : 'stale_rejected',
-      revision: user.revision, assistantTurnId: writes[0].meta.changes === 1 ? assistantId : null });
+       env.DB.prepare(`INSERT INTO state_events (id,session_id,turn_id,revision,kind,at,details_json)
+         VALUES (?,?,?,?,?,?,?)`)
+         .bind(crypto.randomUUID(), id, user.turn_id, user.revision,
+           'voice_assistant_result', at, JSON.stringify({ provider_response_id: responseId, model_call_id: callId,
+             source: 'client_observed_realtime_event', status: session.revision === user.revision ? 'accepted' : 'stale_rejected' })),
+       ...(planJson ? [
+         env.DB.prepare(`UPDATE sessions SET meal_revision=meal_revision+1,meal_source_turn_id=?,
+           meal_accepted_at=?,meal_plan_json=?,shopping_revision=shopping_revision+1,updated_at=?
+           WHERE id=? AND revision=? AND active_voice_id=? AND EXISTS
+           (SELECT 1 FROM turns WHERE id=? AND model_call_id=?)`)
+           .bind(assistantId, at, planJson, at, id, user.revision, voiceId, assistantId, callId),
+         env.DB.prepare(`UPDATE voice_sessions SET meal_snapshot=? WHERE id=? AND EXISTS
+           (SELECT 1 FROM turns WHERE id=? AND model_call_id=?)`)
+           .bind(planJson, voiceId, assistantId, callId),
+         env.DB.prepare(`INSERT INTO state_events (id,session_id,turn_id,revision,kind,at,details_json)
+           SELECT ?,?,?,?,?,?,? WHERE EXISTS
+           (SELECT 1 FROM turns WHERE id=? AND model_call_id=?)`)
+           .bind(crypto.randomUUID(), id, assistantId, user.revision, 'meal_plan_accepted', at,
+             JSON.stringify({ model_call_id: callId, assistant_turn_id: assistantId,
+               source: 'client_observed_realtime_event',
+               item_count: proposed.plan.sections.reduce((n, section) => n + section.items.length, 0) }),
+             assistantId, callId),
+       ] : []),
+       ...(proposed.reason ? [env.DB.prepare(`INSERT INTO state_events
+         (id,session_id,turn_id,revision,kind,at,details_json) VALUES (?,?,?,?,?,?,?)`)
+         .bind(crypto.randomUUID(), id, user.turn_id, user.revision, 'meal_plan_proposal_rejected', at,
+           JSON.stringify({ model_call_id: callId, reason: proposed.reason }))] : []),
+     ]);
+     return json({ status: writes[0].meta.changes === 1 ? 'accepted' : 'stale_rejected',
+       revision: user.revision, assistantTurnId: writes[0].meta.changes === 1 ? assistantId : null,
+       planAccepted: planJson && writes[0].meta.changes === 1 });
   }
   return json({ error: 'INVALID_VOICE_EVENT' }, 400);
 }
@@ -792,8 +855,9 @@ async function dispatchReturns(env) {
 
 async function streamTurn(request, env, ctx, id) {
   if (!env.OPENAI_API_KEY) return json({ error: 'MODEL_UNAVAILABLE' }, 503);
-  if (![BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION].includes(env.BEHAVIOR_VERSION || BEHAVIOR_VERSION)
-    || (env.BEHAVIOR_VERSION === CANDIDATE_BEHAVIOR_VERSION && env.ARM && env.ARM !== 'C'))
+  if (![BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, NEXT_FLOW_BEHAVIOR_VERSION].includes(env.BEHAVIOR_VERSION || BEHAVIOR_VERSION)
+    || (env.BEHAVIOR_VERSION === CANDIDATE_BEHAVIOR_VERSION && env.ARM && env.ARM !== 'C')
+    || (env.BEHAVIOR_VERSION === NEXT_FLOW_BEHAVIOR_VERSION && (!isStage1b(env) || (env.ARM && env.ARM !== 'C'))))
     return json({ error: 'INVALID_BEHAVIOR_CONFIGURATION' }, 503);
   const input = await bodyJson(request);
   const accepted = await acceptTurn(env, id, input);
@@ -807,9 +871,10 @@ async function streamTurn(request, env, ctx, id) {
     ? await env.DB.prepare("SELECT text FROM turns WHERE id=? AND session_id=? AND role='assistant'")
       .bind(session.meal_source_turn_id, id).first() : null;
   const imageAddendum = imageIds.length > 0;
-  const prompt = behavior.instructions + (meal
+   const prompt = behavior.instructions + (meal
     ? `\n\nAccepted meal reference (revision ${session.meal_revision}): The customer explicitly saved this prior Snap reply as the active meal. It is a chosen plan, not evidence that any cooking step occurred.\n${meal.text.slice(0, 4000)}`
-    : '') + (imageAddendum
+     : '') + (behavior.version === NEXT_FLOW_BEHAVIOR_VERSION && session.meal_plan_json
+     ? `\n\nCurrent application-accepted meal and shopping state (revision ${session.meal_revision}):\n${session.meal_plan_json.slice(0, 6000)}\nChecked shopping items are held or assumed as labeled, not proof of cooking.` : '') + (imageAddendum
     ? '\n\nFor a food photo, distinguish visible details from likely interpretation. Ask when a hidden ingredient or preparation choice changes the reconstruction. A photo cannot prove allergens or exact ingredients. Continue the same open culinary conversation.'
     : '');
   const callId = crypto.randomUUID();
@@ -827,7 +892,7 @@ async function streamTurn(request, env, ctx, id) {
       imageAddendum ? `${behavior.version}+image-v1` : behavior.version,
       isStage1b(env) ? 'stage1b-context-v1' : CONTEXT_VERSION,
       effort, session.customer_context, 'none — no memory store in Stage 1B', '[]',
-      JSON.stringify(imageIds), meal?.text.slice(0, 4000) ?? null,
+       JSON.stringify(imageIds), session.meal_plan_json?.slice(0, 6000) ?? meal?.text.slice(0, 4000) ?? null,
       meal ? session.meal_revision : null).run();
 
   const stream = new ReadableStream({
@@ -842,8 +907,9 @@ async function streamTurn(request, env, ctx, id) {
             provider = await fetch('https://api.openai.com/v1/responses', {
               method: 'POST',
               headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
-              body: JSON.stringify({ model, instructions: prompt, input: messages, reasoning: { effort },
-                max_output_tokens: 4096, store: false, stream: true }),
+               body: JSON.stringify({ model, instructions: prompt, input: messages, reasoning: { effort },
+                 ...(behavior.version === NEXT_FLOW_BEHAVIOR_VERSION ? { tools: [MEAL_PLAN_TOOL], tool_choice: 'auto' } : {}),
+                 max_output_tokens: 4096, store: false, stream: true }),
             });
             if (provider.ok) break;
             if (![429, 500, 502, 503, 504].includes(provider.status) || attempt === 2)
@@ -880,8 +946,21 @@ async function streamTurn(request, env, ctx, id) {
             let i;
             while ((i = buffer.indexOf('\n\n')) >= 0) { frame(buffer.slice(0, i)); buffer = buffer.slice(i + 2); }
           }
-          if (buffer.trim()) frame(buffer);
-          if (!completed || !text) throw new Error('INCOMPLETE_STREAM');
+           if (buffer.trim()) frame(buffer);
+           if (!completed) throw new Error('INCOMPLETE_STREAM');
+           const proposed = behavior.version === NEXT_FLOW_BEHAVIOR_VERSION
+             ? planFromOutput(completed.output) : { plan: null, reason: null, calls: [] };
+           let toolOnlyTransition = false;
+           if (!text && proposed.plan) {
+             text = `Perfect. I got you from here. ${proposed.plan.meal}. Let's make sure you have everything.`;
+             toolOnlyTransition = true;
+             const elapsed = Math.round(performance.now() - started);
+             firstTextMs = elapsed;
+             firstUsefulMs = elapsed;
+             firstUsefulExcerpt = text.slice(0, 400);
+             sendSse(controller, { type: 'delta', text });
+           }
+           if (!text) throw new Error('INCOMPLETE_STREAM');
           const fullMs = Math.round(performance.now() - started);
           const usage = completed.usage ?? {};
           const inputTokens = usage.input_tokens ?? null;
@@ -890,9 +969,11 @@ async function streamTurn(request, env, ctx, id) {
           const reasoning = usage.output_tokens_details?.reasoning_tokens ?? 0;
           const cost = Number.isFinite(inputTokens) && Number.isFinite(outputTokens)
             ? estimateUsd(completed.model ?? model, inputTokens, cached, outputTokens) : null;
-          const assistantId = crypto.randomUUID();
-          const assistantAt = now();
-          const write = await env.DB.batch([
+           const assistantId = crypto.randomUUID();
+           const assistantAt = now();
+           const planJson = proposed.plan ? JSON.stringify(proposed.plan) : null;
+           const toolCalls = proposed.calls.map(call => ({ name: call.name, arguments: call.arguments }));
+           const write = await env.DB.batch([
             env.DB.prepare(`INSERT INTO turns (id,session_id,revision,role,text,created_at,model_call_id)
               SELECT ?,s.id,?,'assistant',?,?,? FROM sessions s JOIN turn_operations o
               ON o.session_id=s.id AND o.user_turn_id=? WHERE s.id=? AND s.revision=?
@@ -903,10 +984,10 @@ async function streamTurn(request, env, ctx, id) {
             status=CASE WHEN EXISTS (SELECT 1 FROM turns WHERE model_call_id=?) THEN 'accepted' ELSE 'stale_rejected' END,
             response_model=?,provider_response_id=?,
             first_text_ms=?,first_useful_ms=?,first_useful_excerpt=?,full_ms=?,input_tokens=?,cached_input_tokens=?,output_tokens=?,
-            reasoning_tokens=?,estimated_usd=?,retry_count=?,assistant_text=? WHERE id=?`)
-              .bind(assistantAt, callId, completed.model ?? model,
-              completed.id ?? null, firstTextMs, firstUsefulMs, firstUsefulExcerpt, fullMs, inputTokens, cached, outputTokens,
-              reasoning, cost, retryCount, text, callId),
+             reasoning_tokens=?,estimated_usd=?,retry_count=?,assistant_text=?,tool_calls_json=? WHERE id=?`)
+               .bind(assistantAt, callId, completed.model ?? model,
+               completed.id ?? null, firstTextMs, firstUsefulMs, firstUsefulExcerpt, fullMs, inputTokens, cached, outputTokens,
+               reasoning, cost, retryCount, text, JSON.stringify(toolCalls), callId),
             env.DB.prepare(`UPDATE turn_operations SET
               status=CASE WHEN EXISTS (SELECT 1 FROM turns WHERE model_call_id=?) THEN 'accepted' ELSE 'stale_rejected' END,
               updated_at=? WHERE user_turn_id=? AND current_call_id=?`)
@@ -915,11 +996,34 @@ async function streamTurn(request, env, ctx, id) {
               SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM turns WHERE model_call_id=?)`)
               .bind(crypto.randomUUID(), id, turnId, revision, 'assistant_turn_accepted', assistantAt,
                 JSON.stringify({ model_call_id: callId, assistant_turn_id: assistantId }), callId),
-            env.DB.prepare(`INSERT INTO state_events (id,session_id,turn_id,revision,kind,at,details_json)
-              SELECT ?,?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM turns WHERE model_call_id=?)`)
-              .bind(crypto.randomUUID(), id, turnId, revision, 'stale_result_rejected', assistantAt,
-                JSON.stringify({ model_call_id: callId, assistant_turn_id: null }), callId),
-          ]);
+             env.DB.prepare(`INSERT INTO state_events (id,session_id,turn_id,revision,kind,at,details_json)
+               SELECT ?,?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM turns WHERE model_call_id=?)`)
+               .bind(crypto.randomUUID(), id, turnId, revision, 'stale_result_rejected', assistantAt,
+                 JSON.stringify({ model_call_id: callId, assistant_turn_id: null }), callId),
+             ...(planJson ? [
+               env.DB.prepare(`UPDATE sessions SET meal_revision=meal_revision+1,meal_source_turn_id=?,
+                 meal_accepted_at=?,meal_plan_json=?,shopping_revision=shopping_revision+1,updated_at=?
+                 WHERE id=? AND revision=? AND EXISTS
+                 (SELECT 1 FROM turns WHERE id=? AND model_call_id=?)`)
+                 .bind(assistantId, assistantAt, planJson, assistantAt, id, revision, assistantId, callId),
+               env.DB.prepare(`INSERT INTO state_events (id,session_id,turn_id,revision,kind,at,details_json)
+                 SELECT ?,?,?,?,?,?,? WHERE EXISTS
+                 (SELECT 1 FROM turns WHERE id=? AND model_call_id=?)`)
+                 .bind(crypto.randomUUID(), id, assistantId, revision, 'meal_plan_accepted', assistantAt,
+                   JSON.stringify({ model_call_id: callId, assistant_turn_id: assistantId,
+                     item_count: proposed.plan.sections.reduce((n, section) => n + section.items.length, 0) }),
+                   assistantId, callId),
+             ] : []),
+             ...(proposed.reason ? [env.DB.prepare(`INSERT INTO state_events
+               (id,session_id,turn_id,revision,kind,at,details_json)
+               VALUES (?,?,?,?,?,?,?)`).bind(crypto.randomUUID(), id, turnId, revision,
+                 'meal_plan_proposal_rejected', assistantAt,
+                 JSON.stringify({ model_call_id: callId, reason: proposed.reason }))] : []),
+             ...(toolOnlyTransition ? [env.DB.prepare(`INSERT INTO state_events
+               (id,session_id,turn_id,revision,kind,at,details_json)
+               VALUES (?,?,?,?,?,?,?)`).bind(crypto.randomUUID(), id, turnId, revision,
+                 'tool_only_transition_rendered', assistantAt, JSON.stringify({ model_call_id: callId }))] : []),
+           ]);
           const wasAccepted = write[0].meta.changes === 1;
           sendSse(controller, { type: wasAccepted ? 'complete' : 'stale', turnId, revision,
             firstTextMs, firstUsefulMs, fullMs });
@@ -1020,6 +1124,10 @@ export default {
     const meal = url.pathname.match(/^\/api\/sessions\/([0-9a-f-]{36})\/meal$/i);
     if (isStage1b(env) && meal && request.method === 'POST')
       return await canUseSession(request, env, meal[1]) ? acceptMeal(request, env, meal[1]) : json({ error: 'NOT_FOUND' }, 404);
+    const shopping = url.pathname.match(/^\/api\/sessions\/([0-9a-f-]{36})\/shopping\/([0-9a-f-]{36})$/i);
+    if (isStage1b(env) && shopping && request.method === 'PATCH')
+      return await canUseSession(request, env, shopping[1])
+        ? setShoppingItem(request, env, shopping[1], shopping[2]) : json({ error: 'NOT_FOUND' }, 404);
     const feedback = url.pathname.match(/^\/api\/sessions\/([0-9a-f-]{36})\/turns\/([0-9a-f-]{36})\/feedback$/i);
     if (feedback && request.method === 'POST')
       return await canUseSession(request, env, feedback[1])

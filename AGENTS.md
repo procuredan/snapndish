@@ -6,7 +6,7 @@ Before material work, read [`SNAP_GLOBAL_RULES.md`](SNAP_GLOBAL_RULES.md), [`SNA
 
 ## Current authorization boundary
 
-The owner has authorized the five Stage 1B capability proofs in SNDISH-015. Preserve the instrumented Stage 1A Live Lab at `app.snapndish.com`, its direct chat entry, protected owner review, controlled evaluation, and private results. Build Stage 1B incrementally on separate Snap n Dish staging resources. This does not authorize a public beta, commercial-alpha build, or production deployment. Future production deployments require explicit owner authorization.
+The owner has authorized the five Stage 1B capability proofs in SNDISH-015 and the Next Flow Build on isolated Stage 1B staging in SNDISH-016. Preserve the instrumented Stage 1A Live Lab at `app.snapndish.com`, its direct chat entry, protected owner review, controlled evaluation, and private results. Build Stage 1B incrementally on separate Snap n Dish staging resources. This does not authorize a public beta, commercial-alpha build, or production deployment. Future production deployments require explicit owner authorization.
 
 ## Snap n Dish build principles
 

@@ -13,7 +13,7 @@ class TestDB {
     this.raw.exec(fs.readFileSync(new URL('../live-lab/migrations/0001_init.sql', import.meta.url), 'utf8'));
     for (const file of ['0002_turn_operations.sql', '0003_stage1b_identity_meal.sql',
       '0004_stage1b_images.sql', '0005_stage1b_context_snapshot.sql',
-      '0006_stage1b_voice.sql', '0007_stage1b_return.sql'])
+       '0006_stage1b_voice.sql', '0007_stage1b_return.sql', '0008_next_flow_shopping.sql'])
       this.raw.exec(fs.readFileSync(new URL('../stage1b/migrations/' + file, import.meta.url), 'utf8'));
   }
   prepare(sql) {
@@ -62,11 +62,11 @@ async function createVisitorSession(e, customerContext, ctx = context()) {
   assert.match(r.headers.get('Set-Cookie'), /__Host-sndlab-session=.*HttpOnly; Secure; SameSite=Strict/);
   return { ...(await r.json()), cookie: r.headers.get('Set-Cookie').split(';')[0] };
 }
-function providerStream(text) {
+function providerStream(text, output = []) {
   const frames = [
     { type: 'response.output_text.delta', delta: text.slice(0, 30) },
     { type: 'response.output_text.delta', delta: text.slice(30) },
-    { type: 'response.completed', response: { id: 'resp_test', model: 'gpt-6-astra',
+     { type: 'response.completed', response: { id: 'resp_test', model: 'gpt-6-astra', output,
       usage: { input_tokens: 100, output_tokens: 80, input_tokens_details: { cached_tokens: 0 },
         output_tokens_details: { reasoning_tokens: 10 } } } },
   ];
@@ -120,6 +120,10 @@ test('all rendered pages contain parseable client scripts', () => {
     assert.ok(script, `${kind} script exists`);
     assert.doesNotThrow(() => new Script(script), `${kind} script parses`);
   }
+  const html = page('chat', 'testnonce', true, true);
+  assert.match(html, /data-next-flow="true"/);
+  assert.match(html, /Shopping list/);
+  assert.doesNotThrow(() => new Script(html.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1]));
 });
 
 test('behavior selection keeps v1 available and rejects invalid config before accepting a turn', async () => {
@@ -576,4 +580,103 @@ test('scheduled retention removes expired sessions and dependent records', async
   await worker.scheduled({}, e);
   assert.equal(e.DB.raw.prepare('SELECT COUNT(*) AS n FROM sessions').get().n, 0);
   assert.equal(e.DB.raw.prepare('SELECT COUNT(*) AS n FROM state_events').get().n, 0);
+});
+
+test('Stage 1B next flow accepts one current meal proposal and keeps shopping editable', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-next-flow-v1';
+  const { id, cookie } = await createVisitorSession(e, 'Owns a Blackstone.');
+  const proposal = { meal: 'Chicken tacos, lime slaw and black beans', servings: 8, sections: [
+    { section: 'Produce', items: [{ name: 'Limes', quantity: '8', have_status: 'need' }] },
+    { section: 'Pantry', items: [{ name: 'Cumin', quantity: '2 teaspoons', have_status: 'assumed' }] },
+  ] };
+  const original = globalThis.fetch;
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    assert.equal(body.tools?.[0]?.name, 'publish_meal_plan');
+    assert.match(body.instructions, /never ask for facts already known or volunteered/i);
+    return providerStream('I got you from here. Chicken tacos with lime slaw and black beans.',
+      [{ type: 'function_call', name: 'publish_meal_plan', arguments: JSON.stringify(proposal) }]);
+  };
+  try {
+    const response = await worker.fetch(req(`/api/sessions/${id}/turns`, 'POST',
+      { text: 'Tacos for eight; no allergies.', turnId: crypto.randomUUID(), expectedRevision: 0 }, cookie), e, context());
+    assert.match(await response.text(), /"type":"complete"/);
+  } finally { globalThis.fetch = original; }
+  const saved = await (await worker.fetch(req(`/api/sessions/${id}`, 'GET', undefined, cookie), e, context())).json();
+  assert.equal(saved.meal_revision, 1);
+  assert.equal(saved.shopping_revision, 1);
+  assert.equal(saved.meal_plan.meal, proposal.meal);
+  assert.equal(saved.meal_plan.sections[0].items[0].checked, false);
+  assert.equal(saved.meal_plan.sections[1].items[0].checked, true);
+  assert.equal(saved.meal_plan.sections[1].items[0].have_status, 'assumed');
+  const itemId = saved.meal_plan.sections[0].items[0].id;
+  const changed = await worker.fetch(req(`/api/sessions/${id}/shopping/${itemId}`, 'PATCH',
+    { checked: true, expectedShoppingRevision: 1 }, cookie), e, context());
+  assert.equal(changed.status, 200);
+  assert.equal((await changed.json()).mealPlan.sections[0].items[0].checked, true);
+  assert.equal((await worker.fetch(req(`/api/sessions/${id}/shopping/${itemId}`, 'PATCH',
+    { checked: false, expectedShoppingRevision: 1 }, cookie), e, context())).status, 409);
+  assert.equal(e.DB.raw.prepare("SELECT COUNT(*) AS n FROM state_events WHERE kind='meal_plan_accepted'").get().n, 1);
+  assert.equal(e.DB.raw.prepare("SELECT COUNT(*) AS n FROM state_events WHERE kind='shopping_item_changed'").get().n, 1);
+});
+
+test('Stage 1B voice proposal uses the same accepted plan and shopping state', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-next-flow-v1';
+  const { id, cookie } = await createVisitorSession(e, 'Owns a grill.');
+  const original = globalThis.fetch;
+  globalThis.fetch = async (_url, options) => {
+    const setup = JSON.parse(options.body.get('session'));
+    assert.equal(setup.tools?.[0]?.name, 'publish_meal_plan');
+    return new Response('v=0\r\nanswer', { status: 201, headers: { Location: '/v1/realtime/calls/rtc_test' } });
+  };
+  let voiceId;
+  try {
+    const response = await worker.fetch(req(`/api/sessions/${id}/voice/start`, 'POST',
+      { sdp: 'v=0\r\noffer', expectedRevision: 0 }, cookie), e, context());
+    assert.equal(response.status, 201);
+    voiceId = (await response.json()).voiceSessionId;
+  } finally { globalThis.fetch = original; }
+  await worker.fetch(req(`/api/sessions/${id}/voice/events`, 'POST',
+    { voiceSessionId: voiceId, type: 'user', itemId: 'item_plan_1', transcript: 'Tacos for eight; no allergies.' }, cookie), e, context());
+  const proposal = { meal: 'Chicken tacos and slaw', servings: 8, sections: [
+    { section: 'Meat', items: [{ name: 'Chicken thighs', quantity: '4 pounds', have_status: 'need' }] },
+  ] };
+  const response = await worker.fetch(req(`/api/sessions/${id}/voice/events`, 'POST',
+    { voiceSessionId: voiceId, type: 'assistant', responseId: 'resp_plan_1', userItemId: 'item_plan_1',
+      transcript: 'Chicken tacos and slaw it is. I have your shopping list up.',
+      planCall: { name: 'publish_meal_plan', arguments: JSON.stringify(proposal) },
+      usage: { input_tokens: 100, output_tokens: 200 }, firstUsefulMs: 500, fullMs: 2100 }, cookie), e, context());
+  assert.equal((await response.json()).planAccepted, true);
+  const saved = await (await worker.fetch(req(`/api/sessions/${id}`, 'GET', undefined, cookie), e, context())).json();
+  assert.equal(saved.meal_plan.servings, 8);
+  assert.equal(saved.meal_revision, 1);
+  const itemId = saved.meal_plan.sections[0].items[0].id;
+  assert.equal((await worker.fetch(req(`/api/sessions/${id}/shopping/${itemId}`, 'PATCH',
+    { checked: true, expectedShoppingRevision: 1 }, cookie), e, context())).status, 200);
+  assert.equal(e.DB.raw.prepare('SELECT meal_snapshot FROM voice_sessions').get().meal_snapshot.includes('Chicken tacos'), true);
+});
+
+test('Stage 1B renders a current model meal when the provider returns only a plan tool call', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-next-flow-v1';
+  const { id, cookie } = await createVisitorSession(e, '');
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => providerStream('', [{ type: 'function_call', name: 'publish_meal_plan',
+    arguments: JSON.stringify({ meal: 'Steak tacos and slaw', servings: 4, sections: [
+      { section: 'Meat', items: [{ name: 'Steak', quantity: '2 pounds', have_status: 'need' }] },
+    ] }) }]);
+  try {
+    const response = await worker.fetch(req(`/api/sessions/${id}/turns`, 'POST',
+      { text: 'Make that steak tacos for four.', turnId: crypto.randomUUID(), expectedRevision: 0 }, cookie), e, context());
+    const stream = await response.text();
+    assert.match(stream, /I got you from here/);
+    assert.match(stream, /"type":"complete"/);
+  } finally { globalThis.fetch = original; }
+  assert.equal(e.DB.raw.prepare("SELECT COUNT(*) AS n FROM state_events WHERE kind='tool_only_transition_rendered'").get().n, 1);
+  assert.equal(e.DB.raw.prepare("SELECT COUNT(*) AS n FROM state_events WHERE kind='meal_plan_accepted'").get().n, 1);
 });
