@@ -357,6 +357,47 @@ test('Talk It accepts the complete package before speaking and reuses it on reco
   } finally { globalThis.fetch = original; }
 });
 
+test('a cooking-only proposal cannot fork the accepted package recipe', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-meal-package-v1';
+  const { id, cookie } = await createVisitorSession(e, 'Dinner for two.');
+  const plan = { meal: 'Rice and chicken', servings: 2,
+    sections: [{ section: 'Meat', items: [{ id: crypto.randomUUID(), name: 'Chicken', quantity: '1 lb',
+      have_status: 'confirmed', checked: true }] }],
+    full_plan: [{ title: 'Rice', directions: 'Cook 1 cup rice until tender.' },
+      { title: 'Chicken', directions: 'Cook 1 lb chicken until safely done.' }],
+    current_action: 'Start the rice.' };
+  e.DB.raw.prepare('UPDATE sessions SET meal_revision=1,meal_plan_json=?,shopping_revision=1 WHERE id=?')
+    .run(JSON.stringify(plan), id);
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => new Response('v=0\r\nanswer', { status: 201 });
+  let voiceId;
+  try {
+    const started = await worker.fetch(req(`/api/sessions/${id}/voice/start`, 'POST',
+      { sdp: 'v=0\r\noffer', expectedRevision: 0 }, cookie), e, context());
+    assert.equal(started.status, 201);
+    voiceId = (await started.json()).voiceSessionId;
+  } finally { globalThis.fetch = original; }
+  await worker.fetch(req(`/api/sessions/${id}/voice/events`, 'POST',
+    { voiceSessionId: voiceId, type: 'user', itemId: 'item_recipe_change',
+      transcript: 'I do not have rice; use potatoes instead.' }, cookie), e, context());
+  const proposed = await worker.fetch(req(`/api/sessions/${id}/voice/events`, 'POST',
+    { voiceSessionId: voiceId, type: 'proposal', responseId: 'resp_recipe_change',
+      userItemId: 'item_recipe_change', call: { name: 'update_cooking_progress',
+        arguments: JSON.stringify({ current_action: 'Cook potatoes instead.',
+          full_plan: [{ title: 'Potatoes', directions: 'Boil 1 lb potatoes until tender.' },
+            { title: 'Chicken', directions: 'Cook 1 lb chicken until safely done.' }],
+          remaining_components: null, customer_report: null, equipment_change: null }) } }, cookie), e, context());
+  assert.equal(proposed.status, 200);
+  const result = await proposed.json();
+  assert.equal(result.accepted, false);
+  assert.equal(result.reason, 'FULL_PLAN_REQUIRES_MEAL_PACKAGE_REVISION');
+  const saved = await (await worker.fetch(req(`/api/sessions/${id}`, 'GET', undefined, cookie), e, context())).json();
+  assert.deepEqual(saved.meal_plan.full_plan, plan.full_plan);
+  assert.equal(saved.cooking_progress, null);
+});
+
 test('behavior selection keeps v1 available and rejects invalid config before accepting a turn', async () => {
   const e = env();
   const { id, cookie } = await createVisitorSession(e, 'A skillet.');

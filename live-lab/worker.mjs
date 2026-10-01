@@ -210,6 +210,20 @@ function mealProposal(output, session, version) {
     : {});
 }
 
+function cookingProposalForVersion(output, userText, session, version, proposedPlan = null) {
+  const proposal = cookingFromOutput(output, userText,
+    isBridgeVersion(version) && needsFullCookingPlan(session) && !proposedPlan);
+  if (isPackageVersion(version) && proposal.cooking?.full_plan) {
+    const acceptedPlan = proposedPlan?.full_plan ??
+      (session.meal_plan_json ? JSON.parse(session.meal_plan_json).full_plan : null);
+    if (JSON.stringify(proposal.cooking.full_plan) !== JSON.stringify(acceptedPlan)) {
+      proposal.cooking = null;
+      proposal.reason = 'FULL_PLAN_REQUIRES_MEAL_PACKAGE_REVISION';
+    } else proposal.cooking.full_plan = null;
+  }
+  return proposal;
+}
+
 function revisedCookingState(session, plan, assistantId, at, cooking = null, userTurnId = null) {
   if (!session.cooking_progress_json && !cooking) return null;
   const prior = session.cooking_progress_json ? JSON.parse(session.cooking_progress_json) : null;
@@ -744,8 +758,8 @@ async function acceptVoiceProposal(env, id, session, voice, input) {
   const isMeal = call.name === 'publish_meal_plan';
   const plan = isMeal ? mealProposal([{ type: 'function_call', ...call }], session,
     voice.behavior_version.split('+')[0]) : null;
-  const cooking = isMeal ? null : cookingFromOutput([{ type: 'function_call', ...call }], user.text,
-    needsFullCookingPlan(session));
+  const cooking = isMeal ? null : cookingProposalForVersion([{ type: 'function_call', ...call }],
+    user.text, session, voice.behavior_version.split('+')[0]);
   const reason = isMeal ? plan.reason : !session.meal_plan_json ? 'NO_ACTIVE_PLAN' : cooking.reason;
   const proposed = isMeal ? plan.plan : cooking.cooking;
   const at = now(), callId = crypto.randomUUID();
@@ -1279,8 +1293,7 @@ async function streamTurn(request, env, ctx, id) {
            let proposed = isNextFlow(behavior.version)
              ? mealProposal(completed.output, session, behavior.version) : { plan: null, reason: null, calls: [] };
            let cookingProposal = isCookingVersion(behavior.version)
-             ? cookingFromOutput(completed.output, accepted.text,
-               isBridgeVersion(behavior.version) && needsFullCookingPlan(session) && !proposed.plan)
+             ? cookingProposalForVersion(completed.output, accepted.text, session, behavior.version, proposed.plan)
              : { cooking: null, reason: null, calls: [] };
            if (isBridgeVersion(behavior.version) &&
              ((proposed.reason && proposed.calls.length === 1) ||
@@ -1317,8 +1330,8 @@ async function streamTurn(request, env, ctx, id) {
                  (laterUsage.output_tokens_details?.reasoning_tokens || 0) },
              } };
              proposed = mealProposal(completed.output, session, behavior.version);
-             cookingProposal = cookingFromOutput(completed.output, accepted.text,
-               needsFullCookingPlan(session) && !proposed.plan);
+             cookingProposal = cookingProposalForVersion(completed.output, accepted.text,
+               session, behavior.version, proposed.plan);
              const recoveryText = (completed.output || []).flatMap(item => item.content || [])
                .map(part => part.text || '').join('\n').trim();
              if (recoveryText) {
