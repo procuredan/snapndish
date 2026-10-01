@@ -6,6 +6,7 @@ import { Script } from 'node:vm';
 import worker from '../live-lab/worker.mjs';
 import closedStage1b from '../stage1b/closed.mjs';
 import { page } from '../live-lab/ui.mjs';
+import { normalizeMealPlan } from '../live-lab/meal-plan.mjs';
 
 class TestDB {
   constructor() {
@@ -125,6 +126,235 @@ test('all rendered pages contain parseable client scripts', () => {
   assert.match(html, /data-next-flow="true"/);
   assert.match(html, /Shopping list/);
   assert.doesNotThrow(() => new Script(html.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1]));
+});
+
+test('Stage 1B package keeps Shopping and a complete recipe together, then preserves edits and actual reports', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-meal-package-v1';
+  const visitor = await createVisitorSession(e, 'Two people. A skillet and rice cooker.');
+  const recipe = [
+    { title: 'Rice', directions: 'Start 1 cup rice with the water required for that rice. Cook until tender.' },
+    { title: 'Chicken', directions: 'Season 2 lb chicken thighs. Sear in 1 tbsp oil; cook until safely done.' },
+    { title: 'Plate', directions: 'Finish with lime and serve the chicken over rice.' },
+  ];
+  const packageFor = (servings, chickenQuantity) => ({
+    meal: 'Chicken with rice and lime', servings,
+    sections: [
+      { section: 'Meat', items: [{ name: 'Chicken thighs', quantity: chickenQuantity, have_status: 'need' }] },
+      { section: 'Produce', items: [{ name: 'Lime', quantity: '2', have_status: 'need' }] },
+      { section: 'Pantry', items: [{ name: 'Olive oil', quantity: '1 tbsp', have_status: 'assumed' }] },
+    ], full_plan: recipe, current_action: 'Start the rice while you prepare the chicken.',
+  });
+  const responses = [
+    { text: 'Perfect. I got you from here. Chicken with rice and lime.',
+      call: { type: 'function_call', name: 'publish_meal_plan', arguments: JSON.stringify(packageFor(2, '2 lb')) } },
+    { text: 'Start the rice while you prepare the chicken.',
+      call: { type: 'function_call', name: 'update_cooking_progress', arguments: JSON.stringify({
+        current_action: 'Start the rice while you prepare the chicken.', full_plan: null,
+        remaining_components: null, customer_report: null, equipment_change: null,
+      }) } },
+    { text: 'Keep the rice cooking and prepare the chicken.',
+      call: { type: 'function_call', name: 'update_cooking_progress', arguments: JSON.stringify({
+        current_action: 'Keep the rice cooking and prepare the chicken.', full_plan: null,
+        remaining_components: null,
+        customer_report: { quote: 'The rice is going.', understood_as: 'Rice cooking has started' },
+        equipment_change: null,
+      }) } },
+    { text: 'I adjusted the complete meal for four.',
+      call: { type: 'function_call', name: 'publish_meal_plan', arguments: JSON.stringify(packageFor(4, '4 lb')) } },
+  ];
+  let call = 0;
+  const original = globalThis.fetch;
+  globalThis.fetch = async (_url, init) => {
+    const input = JSON.parse(init.body);
+    assert.equal(input.tools[0].strict, true);
+    assert.ok(input.tools[0].parameters.properties.full_plan);
+    assert.equal(input.tool_choice, 'auto');
+    const result = responses[call++];
+    assert.ok(result, 'one normal culinary call per turn');
+    return providerStream(result.text, [result.call]);
+  };
+  async function send(text) {
+    const revision = e.DB.raw.prepare('SELECT revision FROM sessions WHERE id=?').get(visitor.id).revision;
+    const response = await worker.fetch(req(`/api/sessions/${visitor.id}/turns`, 'POST',
+      { text, turnId: crypto.randomUUID(), expectedRevision: revision }, visitor.cookie), e, context());
+    assert.match(await response.text(), /"type":"complete"/);
+  }
+  try {
+    await send('Chicken with rice and lime for two.');
+    let saved = await (await worker.fetch(req(`/api/sessions/${visitor.id}`, 'GET', undefined, visitor.cookie), e, context())).json();
+    assert.deepEqual(saved.meal_plan.full_plan, recipe, 'full plan exists at commitment');
+    assert.equal(saved.cooking_progress, null, 'no physical progress was invented');
+    const sourceTurnId = e.DB.raw.prepare("SELECT id FROM turns WHERE session_id=? AND revision=1 AND role='user'")
+      .get(visitor.id).id;
+    const painted = await worker.fetch(req(`/api/sessions/${visitor.id}/metrics`, 'POST',
+      { sourceTurnId, kind: 'full_plan_visible', revision: saved.meal_revision, elapsedMs: 940 }, visitor.cookie), e, context());
+    assert.equal(painted.status, 200);
+    assert.equal(e.DB.raw.prepare("SELECT json_extract(details_json,'$.elapsed_ms') AS ms FROM state_events WHERE kind='full_plan_visible'")
+      .get().ms, 940);
+    const before = Object.fromEntries(saved.meal_plan.sections.flatMap(s => s.items).map(item => [item.name, item]));
+    for (const [name, checked] of [['Lime', true], ['Olive oil', false]]) {
+      const item = saved.meal_plan.sections.flatMap(s => s.items).find(i => i.name === name);
+      const changed = await worker.fetch(req(`/api/sessions/${visitor.id}/shopping/${item.id}`, 'PATCH',
+        { expectedShoppingRevision: saved.shopping_revision, checked }, visitor.cookie), e, context());
+      assert.equal(changed.status, 200);
+      saved = await (await worker.fetch(req(`/api/sessions/${visitor.id}`, 'GET', undefined, visitor.cookie), e, context())).json();
+    }
+    await send("Let's cook.");
+    saved = await (await worker.fetch(req(`/api/sessions/${visitor.id}`, 'GET', undefined, visitor.cookie), e, context())).json();
+    assert.deepEqual(saved.cooking_progress.full_plan, recipe, 'cooking focus reused the package plan');
+    assert.equal(saved.cooking_progress.reports.length, 0);
+    await send('The rice is going.');
+    await send('Make it four people instead.');
+    saved = await (await worker.fetch(req(`/api/sessions/${visitor.id}`, 'GET', undefined, visitor.cookie), e, context())).json();
+    const after = Object.fromEntries(saved.meal_plan.sections.flatMap(s => s.items).map(item => [item.name, item]));
+    assert.equal(after.Lime.id, before.Lime.id);
+    assert.equal(after.Lime.checked, true);
+    assert.equal(after.Lime.customer_edited, true);
+    assert.equal(after['Olive oil'].id, before['Olive oil'].id);
+    assert.equal(after['Olive oil'].checked, false);
+    assert.equal(after['Olive oil'].customer_edited, true);
+    assert.equal(after['Chicken thighs'].checked, false);
+    assert.equal(after['Chicken thighs'].quantity_changed, true);
+    assert.equal(saved.cooking_progress.reports[0].understood_as, 'Rice cooking has started');
+    assert.deepEqual(saved.cooking_progress.full_plan, recipe);
+    assert.equal(call, responses.length);
+    const html = page('chat', 'testnonce', true, true, true);
+    assert.match(html, /data-meal-package="true"/);
+    assert.ok(html.indexOf('id="recipe"') > html.indexOf('id="plan-details"'), 'recipe follows Shopping');
+  } finally { globalThis.fetch = original; }
+});
+
+test('a Stage 1B meal package rejects missing or malformed cooking sections', () => {
+  const base = { meal: 'A complete supper', servings: 2,
+    sections: [{ section: 'Produce', items: [{ name: 'Potatoes', quantity: '1 lb', have_status: 'need' }] }],
+    current_action: 'Start the potatoes.' };
+  assert.equal(normalizeMealPlan(base, { requireFullPlan: true }), null);
+  assert.equal(normalizeMealPlan({ ...base, full_plan: 'Start potatoes' }, { requireFullPlan: true }), null);
+  assert.equal(normalizeMealPlan({ ...base, full_plan: [{ title: 'Potatoes', directions: 'Roast 1 lb potatoes until tender.' }] },
+    { requireFullPlan: true }).full_plan.length, 1);
+});
+
+test('a revised package applies new ingredient facts but preserves manual Shopping choices', () => {
+  const prior = normalizeMealPlan({ meal: 'Dinner', servings: 2,
+    sections: [{ section: 'Pantry', items: [
+      { name: 'Oil', quantity: '2 tbsp', have_status: 'assumed' },
+      { name: 'Rice', quantity: '1 cup', have_status: 'need' },
+    ] }] });
+  prior.sections[0].items[1].checked = true;
+  prior.sections[0].items[1].have_status = 'confirmed';
+  prior.sections[0].items[1].customer_edited = true;
+  const next = normalizeMealPlan({ meal: 'Dinner', servings: 2,
+    sections: [{ section: 'Pantry', items: [
+      { name: 'Oil', quantity: '2 tbsp', have_status: 'need' },
+      { name: 'Rice', quantity: '1 cup', have_status: 'need' },
+    ] }] }, { priorPlan: prior });
+  assert.equal(next.sections[0].items[0].checked, false, 'newly reported missing staple overrides assumption');
+  assert.equal(next.sections[0].items[1].checked, true, 'manual check survives unrelated revision');
+  assert.equal(next.sections[0].items[1].customer_edited, true);
+});
+
+test('one commitment response can atomically accept related meal and Now proposals', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-meal-package-v1';
+  const { id, cookie } = await createVisitorSession(e, 'Dinner for two.');
+  const recipe = [{ title: 'Chicken', directions: 'Cook 1 lb chicken thighs until safely done.' }];
+  const packageCall = { meal: 'Chicken dinner', servings: 2,
+    sections: [{ section: 'Meat', items: [{ name: 'Chicken thighs', quantity: '1 lb', have_status: 'confirmed' }] }],
+    full_plan: recipe, current_action: 'Cook the chicken.' };
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => providerStream('Chicken dinner it is.', [
+    { type: 'function_call', name: 'publish_meal_plan', arguments: JSON.stringify(packageCall) },
+    { type: 'function_call', name: 'update_cooking_progress', arguments: JSON.stringify({
+      current_action: 'Start heating the skillet for the chicken.', full_plan: null,
+      remaining_components: null, customer_report: null, equipment_change: null,
+    }) },
+  ]);
+  try {
+    const response = await worker.fetch(req(`/api/sessions/${id}/turns`, 'POST',
+      { text: 'Make the chicken dinner for two and let’s cook.', turnId: crypto.randomUUID(), expectedRevision: 0 }, cookie), e, context());
+    assert.match(await response.text(), /"type":"complete"/);
+  } finally { globalThis.fetch = original; }
+  const saved = await (await worker.fetch(req(`/api/sessions/${id}`, 'GET', undefined, cookie), e, context())).json();
+  assert.equal(saved.meal_revision, 1);
+  assert.equal(saved.cooking_revision, 1);
+  assert.equal(saved.cooking_progress.current_action, 'Start heating the skillet for the chicken.');
+  assert.deepEqual(saved.cooking_progress.full_plan, recipe);
+  assert.equal(saved.cooking_progress.reports.length, 0);
+});
+
+test('Talk It accepts the complete package before speaking and reuses it on reconnect', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-meal-package-v1';
+  const { id, cookie } = await createVisitorSession(e, 'Two people. Skillet and rice cooker.');
+  const original = globalThis.fetch;
+  globalThis.fetch = async (_url, options) => {
+    const setup = JSON.parse(options.body.get('session'));
+    assert.equal(setup.tools[0].strict, true);
+    assert.ok(setup.tools[0].parameters.properties.full_plan);
+    return new Response('v=0\r\nanswer', { status: 201 });
+  };
+  let voiceId;
+  try {
+    const response = await worker.fetch(req(`/api/sessions/${id}/voice/start`, 'POST',
+      { sdp: 'v=0\r\noffer', expectedRevision: 0 }, cookie), e, context());
+    assert.equal(response.status, 201);
+    const connected = await response.json();
+    voiceId = connected.voiceSessionId;
+    assert.equal(connected.behaviorVersion, 'stage1b-meal-package-v1+voice-bridge-v2');
+  } finally { globalThis.fetch = original; }
+  const post = async payload => {
+    const response = await worker.fetch(req(`/api/sessions/${id}/voice/events`, 'POST',
+      { voiceSessionId: voiceId, ...payload }, cookie), e, context());
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const user = await post({ type: 'user', itemId: 'item_package_one',
+    transcript: 'Make the lemon chicken with rice and salad for two.' });
+  const packageCall = { meal: 'Lemon chicken, rice and cucumber salad', servings: 2,
+    sections: [{ section: 'Meat', items: [{ name: 'Chicken thighs', quantity: '1 lb', have_status: 'need' }] },
+      { section: 'Produce', items: [{ name: 'Cucumber', quantity: '1', have_status: 'need' }] },
+      { section: 'Pantry', items: [{ name: 'Rice', quantity: '1 cup', have_status: 'assumed' }] }],
+    full_plan: [{ title: 'Rice', directions: 'Cook 1 cup rice in the rice cooker until tender.' },
+      { title: 'Chicken and salad', directions: 'Sear 1 lb chicken until safely done; slice cucumber and serve.' }],
+    current_action: 'Start the rice, then prepare the chicken and cucumber.' };
+  const result = await post({ type: 'proposal', responseId: 'resp_package_one',
+    userItemId: 'item_package_one', call: { name: 'publish_meal_plan', arguments: JSON.stringify(packageCall) },
+    usage: { input_tokens: 80, output_tokens: 120 }, fullMs: 2900 });
+  assert.equal(result.accepted, true);
+  assert.equal(result.operation, 'meal');
+  let saved = await (await worker.fetch(req(`/api/sessions/${id}`, 'GET', undefined, cookie), e, context())).json();
+  assert.equal(saved.meal_plan.full_plan.length, 2);
+  assert.equal(saved.cooking_progress, null);
+  assert.equal(e.DB.raw.prepare("SELECT COUNT(*) AS n FROM turns WHERE role='assistant'").get().n, 0,
+    'proposal acceptance precedes the spoken continuation');
+  const spoken = await post({ type: 'assistant', responseId: 'resp_package_speech',
+    userItemId: 'item_package_one', transcript: 'Lemon chicken with rice and salad it is. Shopping and the recipe are ready.' });
+  assert.equal(spoken.status, 'accepted');
+  saved = await (await worker.fetch(req(`/api/sessions/${id}`, 'GET', undefined, cookie), e, context())).json();
+  assert.equal(saved.turns.at(-1).source, 'talk');
+  assert.equal(saved.meal_revision, 1);
+  const metric = await worker.fetch(req(`/api/sessions/${id}/metrics`, 'POST',
+    { sourceTurnId: user.turnId, kind: 'full_plan_visible', revision: 1, elapsedMs: 610 }, cookie), e, context());
+  assert.equal(metric.status, 200);
+  assert.equal((await worker.fetch(req(`/api/sessions/${id}`, 'GET', undefined,
+    (await createVisitorSession(e, 'Other visitor')).cookie), e, context())).status, 404);
+  assert.equal((await worker.fetch(req(`/api/sessions/${id}/voice/stop`, 'POST',
+    { voiceSessionId: voiceId }, cookie), e, context())).status, 200);
+  globalThis.fetch = async (_url, options) => {
+    const setup = JSON.parse(options.body.get('session'));
+    assert.match(setup.instructions, /Lemon chicken, rice and cucumber salad/);
+    assert.match(setup.instructions, /Cook 1 cup rice/);
+    return new Response('v=0\r\nanswer', { status: 201 });
+  };
+  try {
+    const reopened = await worker.fetch(req(`/api/sessions/${id}/voice/start`, 'POST',
+      { sdp: 'v=0\r\noffer', expectedRevision: saved.revision }, cookie), e, context());
+    assert.equal(reopened.status, 201);
+  } finally { globalThis.fetch = original; }
 });
 
 test('behavior selection keeps v1 available and rejects invalid config before accepting a turn', async () => {

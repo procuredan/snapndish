@@ -25,7 +25,7 @@
     "STAGE1B_ENABLED": "true",
     "MODEL": "gpt-6-astra",
     "REASONING_EFFORT": "medium",
-    "BEHAVIOR_VERSION": "stage1b-cooking-v2",
+    "BEHAVIOR_VERSION": "stage1b-meal-package-v1",
     "ARM": "C"
   }
 }

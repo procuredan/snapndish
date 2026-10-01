@@ -1,8 +1,8 @@
-import { instructionsFor, instructionsForCandidate, instructionsForNextFlow, instructionsForCookingMode, instructionsForCookingModeV2, estimateUsd, BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, NEXT_FLOW_BEHAVIOR_VERSION, COOKING_BEHAVIOR_VERSION, COOKING_PLAN_BEHAVIOR_VERSION, CONTEXT_VERSION, SCENARIO_VERSION } from '../src/config.ts';
+import { instructionsFor, instructionsForCandidate, instructionsForNextFlow, instructionsForCookingMode, instructionsForCookingModeV2, instructionsForMealPackage, estimateUsd, BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, NEXT_FLOW_BEHAVIOR_VERSION, COOKING_BEHAVIOR_VERSION, COOKING_PLAN_BEHAVIOR_VERSION, MEAL_PACKAGE_BEHAVIOR_VERSION, CONTEXT_VERSION, SCENARIO_VERSION } from '../src/config.ts';
 import { page } from './ui.mjs';
 import { stripJpegMetadata } from './jpeg.mjs';
 import { serviceWorker } from './push-sw.mjs';
-import { MEAL_PLAN_TOOL, normalizeMealPlan, planFromOutput } from './meal-plan.mjs';
+import { MEAL_PLAN_TOOL, MEAL_PACKAGE_TOOL, normalizeMealPlan, planFromOutput } from './meal-plan.mjs';
 import { COOKING_PROGRESS_TOOL, COOKING_PROGRESS_TOOL_V2, cookingFromOutput } from './cooking-progress.mjs';
 
 const DAY = 86_400_000;
@@ -13,9 +13,12 @@ const SESSION_COOKIE = '__Host-sndlab-session';
 const CUSTOMER_COOKIE = '__Host-sndlab-customer';
 const encoder = new TextEncoder();
 const isStage1b = env => env.STAGE1B_ENABLED === 'true';
-const isCookingVersion = version => version === COOKING_BEHAVIOR_VERSION || version === COOKING_PLAN_BEHAVIOR_VERSION;
+const isPackageVersion = version => version === MEAL_PACKAGE_BEHAVIOR_VERSION;
+const isBridgeVersion = version => version === COOKING_PLAN_BEHAVIOR_VERSION || isPackageVersion(version);
+const isCookingVersion = version => version === COOKING_BEHAVIOR_VERSION || isBridgeVersion(version);
 const isNextFlow = version => version === NEXT_FLOW_BEHAVIOR_VERSION || isCookingVersion(version);
-const toolsFor = version => version === COOKING_PLAN_BEHAVIOR_VERSION
+const toolsFor = version => isPackageVersion(version)
+  ? [MEAL_PACKAGE_TOOL, COOKING_PROGRESS_TOOL_V2] : version === COOKING_PLAN_BEHAVIOR_VERSION
   ? [MEAL_PLAN_TOOL, COOKING_PROGRESS_TOOL_V2] : version === COOKING_BEHAVIOR_VERSION
     ? [MEAL_PLAN_TOOL, COOKING_PROGRESS_TOOL] : version === NEXT_FLOW_BEHAVIOR_VERSION ? [MEAL_PLAN_TOOL] : [];
 const BASE_HEADERS = {
@@ -95,7 +98,7 @@ async function canUseSession(request, env, id) {
 }
 function html(kind, env) {
   const nonce = randomToken(15);
-  return new Response(page(kind, nonce, isStage1b(env), isNextFlow(env.BEHAVIOR_VERSION)), { headers: {
+  return new Response(page(kind, nonce, isStage1b(env), isNextFlow(env.BEHAVIOR_VERSION), isPackageVersion(env.BEHAVIOR_VERSION)), { headers: {
     ...BASE_HEADERS,
     'Permissions-Policy': isStage1b(env) ? 'camera=(self), microphone=(self), geolocation=()' : BASE_HEADERS['Permissions-Policy'],
     'Content-Type': 'text/html; charset=utf-8',
@@ -167,11 +170,13 @@ async function equipmentContext(env, session) {
 
 function cookingContext(session) {
   return session.cooking_progress_json
-    ? `\n\nApplication-accepted cooking plan and progress (meal revision ${session.meal_revision}, cooking revision ${session.cooking_revision}):\n${session.cooking_progress_json.slice(0, 7000)}\n${needsFullCookingPlan(session) ? 'This older session has no accepted Full Plan. Propose one with the next cooking update.' : ''} The current Now guidance may advance without a physical completion report. Only reports describe what the customer said happened; never infer completion from prior guidance.`
-    : '\n\nNo full cooking plan or physical progress has been accepted for this meal.';
+    ? `\n\nApplication-accepted cooking guidance and customer reports (meal revision ${session.meal_revision}, cooking revision ${session.cooking_revision}):\n${session.cooking_progress_json}\n${needsFullCookingPlan(session) ? 'This older session has no accepted Full Plan. Propose one with the next cooking update.' : ''} Reports from earlier meal revisions are historical; apply them only when relevant. Now guidance is not proof of completion.`
+    : `\n\n${needsFullCookingPlan(session) ? 'No full cooking plan' : 'The complete plan is in the accepted meal package; no separate cooking guidance'} or physical progress has been accepted for this meal.`;
 }
 
 function needsFullCookingPlan(session) {
+  try { if (Array.isArray(JSON.parse(session.meal_plan_json ?? 'null')?.full_plan)) return false; }
+  catch { /* Read older state below. */ }
   if (!session.cooking_progress_json) return true;
   try { return !Array.isArray(JSON.parse(session.cooking_progress_json).full_plan); }
   catch { return true; }
@@ -187,14 +192,36 @@ function rejectedCookingCallText(calls) {
 
 function nextCookingState(session, proposed, assistantId, userTurnId, at) {
   const prior = session.cooking_progress_json ? JSON.parse(session.cooking_progress_json) : null;
+  const mealPlan = session.meal_plan_json ? JSON.parse(session.meal_plan_json) : null;
   const reports = prior?.meal_revision === session.meal_revision ? prior.reports ?? [] : [];
   return JSON.stringify({ meal_revision: session.meal_revision, current_action: proposed.current_action,
     current_action_turn_id: assistantId, remaining_components: proposed.remaining_components ??
       (prior?.meal_revision === session.meal_revision ? prior.remaining_components : null) ?? [],
-    full_plan: proposed.full_plan ?? (prior?.meal_revision === session.meal_revision ? prior.full_plan : null) ?? null,
+    full_plan: proposed.full_plan ?? (prior?.meal_revision === session.meal_revision ? prior.full_plan : null) ?? mealPlan?.full_plan ?? null,
     reports: [...reports, ...(proposed.customer_report ? [{ source_turn_id: userTurnId,
-      quote: proposed.customer_report.quote, understood_as: proposed.customer_report.understood_as, at }] : [])].slice(-30),
+      quote: proposed.customer_report.quote, understood_as: proposed.customer_report.understood_as,
+      meal_revision: session.meal_revision, at }] : [])].slice(-30),
     updated_at: at });
+}
+
+function mealProposal(output, session, version) {
+  return planFromOutput(output, isPackageVersion(version)
+    ? { requireFullPlan: true, priorPlan: session.meal_plan_json ? JSON.parse(session.meal_plan_json) : null }
+    : {});
+}
+
+function revisedCookingState(session, plan, assistantId, at, cooking = null, userTurnId = null) {
+  if (!session.cooking_progress_json && !cooking) return null;
+  const prior = session.cooking_progress_json ? JSON.parse(session.cooking_progress_json) : null;
+  const reports = (prior?.reports ?? []).map(report => ({ ...report,
+    meal_revision: report.meal_revision ?? prior.meal_revision }));
+  if (cooking?.customer_report) reports.push({ source_turn_id: userTurnId,
+    quote: cooking.customer_report.quote, understood_as: cooking.customer_report.understood_as,
+    meal_revision: session.meal_revision + 1, at });
+  return JSON.stringify({ meal_revision: session.meal_revision + 1,
+    current_action: cooking?.current_action ?? plan.current_action, current_action_turn_id: assistantId,
+    remaining_components: plan.full_plan.map(section => section.title), full_plan: plan.full_plan,
+    reports: reports.slice(-30), updated_at: at });
 }
 
 async function createSession(request, env) {
@@ -308,6 +335,8 @@ async function setShoppingItem(request, env, id, itemId) {
   if (item.checked === input.checked) return json({ shoppingRevision: session.shopping_revision, mealPlan: plan });
   item.checked = input.checked;
   item.have_status = input.checked ? 'confirmed' : 'need';
+  item.customer_edited = true;
+  delete item.quantity_changed;
   const at = now();
   const changed = await env.DB.prepare(`UPDATE sessions SET meal_plan_json=?,shopping_revision=shopping_revision+1,updated_at=?
     WHERE id=? AND shopping_revision=? AND meal_revision=? AND meal_plan_json IS NOT NULL`)
@@ -472,6 +501,8 @@ function firstUsefulProxy(text) {
 
 function behaviorFor(env, context, hasAcceptedMeal = false, cookingActive = false) {
   const version = env.BEHAVIOR_VERSION || BEHAVIOR_VERSION;
+  if (isPackageVersion(version) && isStage1b(env) && (!env.ARM || env.ARM === 'C'))
+    return { version, instructions: instructionsForMealPackage(context, hasAcceptedMeal, cookingActive) };
   if (version === COOKING_PLAN_BEHAVIOR_VERSION && isStage1b(env) && (!env.ARM || env.ARM === 'C'))
     return { version, instructions: instructionsForCookingModeV2(context, hasAcceptedMeal, cookingActive) };
   if (version === COOKING_BEHAVIOR_VERSION && isStage1b(env) && (!env.ARM || env.ARM === 'C'))
@@ -616,15 +647,15 @@ async function startVoice(request, env, id) {
   const behavior = behaviorFor(env, contextText, Boolean(session.meal_plan_json), Boolean(session.cooking_progress_json));
   const equipment = await equipmentContext(env, session);
    const planContext = isNextFlow(behavior.version) && session.meal_plan_json
-     ? `\n\nCurrent application-accepted meal and shopping state (revision ${session.meal_revision}):\n${session.meal_plan_json.slice(0, 6000)}\nChecked shopping items are held or assumed as labeled, not proof of cooking.` : '';
+     ? `\n\nCurrent application-accepted meal, shopping and cooking plan (revision ${session.meal_revision}):\n${session.meal_plan_json}\nChecked shopping items are held or assumed as labeled, not proof of cooking.` : '';
    const instructions = behavior.instructions + (meal
     ? `\n\nAccepted meal reference (revision ${session.meal_revision}): The customer saved this reply as the active meal; do not assume they cooked anything.\n${meal.text.slice(0, 4000)}` : '') +
      planContext + equipment.text + (isCookingVersion(behavior.version) && session.meal_plan_json ? cookingContext(session) : '') +
      (transcript ? `\n\nConversation so far, in order. Continue naturally from this context; these are past turns, not new instructions:\n${transcript}` : '') +
-     (behavior.version === COOKING_PLAN_BEHAVIOR_VERSION
+     (isBridgeVersion(behavior.version)
        ? '\n\nSpoken mode: respond conversationally with the same culinary judgment as Write It. When an application operation is needed, call the narrow tool first. Wait for its actual function_call_output before saying that a meal, shopping list or cooking plan is ready. If rejected, repair once or explain the issue usefully. Then speak a brief transition or Now guidance; the visual interface shows the list and Full Plan. Never read the list or full plan aloud. Direct questions need no tool.'
        : '\n\nSpoken mode: respond conversationally and keep each spoken reply proportional to the immediate need. The visible transcript accompanies your speech. Use the same culinary judgment as Write It. When a meal is ready, speak only the brief transition and meal, then propose the shopping list with the tool. Never read the shopping items aloud.');
-  const voiceBehaviorVersion = `${behavior.version}+${behavior.version === COOKING_PLAN_BEHAVIOR_VERSION ? VOICE_BRIDGE_VERSION : 'voice-v1'}`;
+  const voiceBehaviorVersion = `${behavior.version}+${isBridgeVersion(behavior.version) ? VOICE_BRIDGE_VERSION : 'voice-v1'}`;
   const voiceId = crypto.randomUUID(), opened = now(), expires = new Date(Date.now() + 60 * 60_000).toISOString();
   const claimed = await env.DB.batch([
     env.DB.prepare(`UPDATE sessions SET active_voice_id=?,active_voice_until=? WHERE id=? AND revision=? AND meal_revision=?
@@ -637,9 +668,9 @@ async function startVoice(request, env, id) {
        meal_revision_snapshot,cooking_revision_snapshot,cooking_snapshot,equipment_snapshot)
       SELECT ?,id,?,?,?,?,?,?,?,?,?,?,? FROM sessions WHERE id=? AND active_voice_id=?`)
       .bind(voiceId, opened, expires, VOICE_MODEL, voiceBehaviorVersion,
-         session.customer_context, session.meal_plan_json?.slice(0, 6000) ?? meal?.text.slice(0, 4000) ?? null,
+         session.customer_context, session.meal_plan_json ?? meal?.text.slice(0, 4000) ?? null,
          transcript, session.meal_revision, session.cooking_revision ?? 0,
-         session.cooking_progress_json?.slice(0, 6000) ?? null, equipment.memory, id, voiceId),
+         session.cooking_progress_json ?? null, equipment.memory, id, voiceId),
   ]);
   if (claimed[0].meta.changes !== 1) return json({ error: 'VOICE_ACTIVE' }, 409);
   const began = performance.now();
@@ -670,7 +701,8 @@ async function startVoice(request, env, id) {
       behaviorVersion: voiceBehaviorVersion, connectMs,
       ...(isNextFlow(behavior.version) ? { syncInstructions: instructions } : {}),
       ...(isCookingVersion(behavior.version) ? { cookingSyncInstructions:
-        (behavior.version === COOKING_PLAN_BEHAVIOR_VERSION ? instructionsForCookingModeV2 : instructionsForCookingMode)(contextText, true, true) +
+        (isPackageVersion(behavior.version) ? instructionsForMealPackage :
+          behavior.version === COOKING_PLAN_BEHAVIOR_VERSION ? instructionsForCookingModeV2 : instructionsForCookingMode)(contextText, true, true) +
         (transcript ? `\n\nConversation before this spoken session:\n${transcript}` : '') +
         '\n\nSpoken mode: say the useful Now guidance or answer conversationally; keep the visible transcript. Do not read the full plan or shopping list aloud.' } : {}) }, 201);
   } catch (error) {
@@ -685,7 +717,7 @@ async function startVoice(request, env, id) {
 }
 
 async function acceptVoiceProposal(env, id, session, voice, input) {
-  if (!voice.behavior_version.startsWith(COOKING_PLAN_BEHAVIOR_VERSION))
+  if (!isBridgeVersion(voice.behavior_version.split('+')[0]))
     return json({ error: 'UNSUPPORTED_VOICE_PROPOSAL' }, 400);
   const responseId = input.responseId, itemId = input.userItemId, call = input.call;
   if (typeof responseId !== 'string' || !/^[A-Za-z0-9_-]{4,128}$/.test(responseId) ||
@@ -710,7 +742,8 @@ async function acceptVoiceProposal(env, id, session, voice, input) {
     return json({ status: 'stale_rejected', accepted: false, reason: 'ACCEPTED_STATE_CHANGED' });
 
   const isMeal = call.name === 'publish_meal_plan';
-  const plan = isMeal ? planFromOutput([{ type: 'function_call', ...call }]) : null;
+  const plan = isMeal ? mealProposal([{ type: 'function_call', ...call }], session,
+    voice.behavior_version.split('+')[0]) : null;
   const cooking = isMeal ? null : cookingFromOutput([{ type: 'function_call', ...call }], user.text,
     needsFullCookingPlan(session));
   const reason = isMeal ? plan.reason : !session.meal_plan_json ? 'NO_ACTIVE_PLAN' : cooking.reason;
@@ -748,13 +781,15 @@ async function acceptVoiceProposal(env, id, session, voice, input) {
 
   const planJson = isMeal ? JSON.stringify(proposed) : null;
   const cookingJson = isMeal ? null : nextCookingState(session, proposed, user.turn_id, user.turn_id, at);
+  const packageVoice = isMeal && isPackageVersion(voice.behavior_version.split('+')[0]);
+  const revisedJson = packageVoice ? revisedCookingState(session, proposed, user.turn_id, at) : null;
   const changed = await env.DB.batch([
     isMeal ? env.DB.prepare(`UPDATE sessions SET meal_revision=meal_revision+1,
       meal_source_turn_id=?,meal_accepted_at=?,meal_plan_json=?,shopping_revision=shopping_revision+1,
-      cooking_revision=cooking_revision+1,cooking_progress_json=NULL,updated_at=?
+      cooking_revision=cooking_revision+1,cooking_progress_json=${packageVoice ? '?' : 'NULL'},updated_at=?
       WHERE id=? AND revision=? AND meal_revision=? AND cooking_revision=?
       AND shopping_revision=? AND active_voice_id=?`)
-      .bind(user.turn_id, at, planJson, at, id, user.revision, session.meal_revision,
+      .bind(user.turn_id, at, planJson, ...(packageVoice ? [revisedJson] : []), at, id, user.revision, session.meal_revision,
         session.cooking_revision, user.shopping_revision_snapshot, voice.id)
       : env.DB.prepare(`UPDATE sessions SET cooking_revision=cooking_revision+1,
         cooking_progress_json=?,updated_at=? WHERE id=? AND revision=? AND meal_revision=?
@@ -778,11 +813,12 @@ async function acceptVoiceProposal(env, id, session, voice, input) {
             : { customer_reported: Boolean(proposed.customer_report),
                 ignored_fields: proposed.ignored_fields }) }), voice.id, responseId, callId),
     env.DB.prepare(`UPDATE voice_sessions SET
-      ${isMeal ? 'meal_snapshot=?,meal_revision_snapshot=meal_revision_snapshot+1,cooking_revision_snapshot=cooking_revision_snapshot+1,cooking_snapshot=NULL'
+      ${isMeal ? `meal_snapshot=?,meal_revision_snapshot=meal_revision_snapshot+1,cooking_revision_snapshot=cooking_revision_snapshot+1,cooking_snapshot=${packageVoice ? '?' : 'NULL'}`
         : 'cooking_revision_snapshot=cooking_revision_snapshot+1,cooking_snapshot=?'}
       WHERE id=? AND EXISTS (SELECT 1 FROM voice_assistant_items
       WHERE voice_session_id=? AND provider_response_id=? AND model_call_id=?)`)
-      .bind(isMeal ? planJson : cookingJson, voice.id, voice.id, responseId, callId),
+      .bind(...(isMeal ? packageVoice ? [planJson, revisedJson] : [planJson] : [cookingJson]),
+        voice.id, voice.id, responseId, callId),
   ]);
   if (changed[0].meta.changes !== 1)
     return json({ status: 'stale_rejected', accepted: false, reason: 'ACCEPTED_STATE_CHANGED' });
@@ -796,16 +832,29 @@ async function recordClientRenderMetric(request, env, id) {
   const input = await bodyJson(request);
   const { sourceTurnId, kind, revision, elapsedMs } = input;
   if (!/^[0-9a-f-]{36}$/i.test(sourceTurnId ?? '') ||
-    !['shopping_visible', 'now_visible', 'now_speech_delta_proxy'].includes(kind) ||
+    !['shopping_visible', 'now_visible', 'now_speech_delta_proxy',
+      'full_plan_visible', 'meal_speech_delta_proxy'].includes(kind) ||
     !Number.isInteger(revision) || revision < 1 ||
     !Number.isInteger(elapsedMs) || elapsedMs < 0 || elapsedMs > 120_000)
     return json({ error: 'INVALID_RENDER_METRIC' }, 400);
   const session = await getSession(env.DB, id);
-  const authoritativeRevision = kind === 'shopping_visible' ? session?.meal_revision : session?.cooking_revision;
+  const authoritativeRevision = ['shopping_visible', 'full_plan_visible', 'meal_speech_delta_proxy'].includes(kind)
+    ? session?.meal_revision : session?.cooking_revision;
   if (authoritativeRevision !== revision) return json({ error: 'STALE_RENDER_METRIC' }, 409);
   const source = await env.DB.prepare('SELECT id FROM turns WHERE id=? AND session_id=? AND role=?')
     .bind(sourceTurnId, id, 'user').first();
   if (!source) return json({ error: 'UNKNOWN_RENDER_SOURCE' }, 404);
+  if (kind === 'full_plan_visible' || kind === 'meal_speech_delta_proxy') {
+    if (!isPackageVersion(env.BEHAVIOR_VERSION) || !session?.meal_plan_json)
+      return json({ error: 'INVALID_RENDER_METRIC' }, 400);
+    await env.DB.prepare(`INSERT INTO state_events (id,session_id,turn_id,revision,kind,at,details_json)
+      SELECT ?,?,?,?,?,?,? WHERE NOT EXISTS
+      (SELECT 1 FROM state_events WHERE session_id=? AND turn_id=? AND kind=?)`)
+      .bind(crypto.randomUUID(), id, sourceTurnId, revision, kind, now(),
+        JSON.stringify({ elapsed_ms: elapsedMs, source: 'client_render_metric' }),
+        id, sourceTurnId, kind).run();
+    return json({ accepted: true });
+  }
   await env.DB.prepare(`INSERT OR IGNORE INTO client_render_metrics
     (id,session_id,source_turn_id,kind,revision,elapsed_ms,observed_at)
     VALUES (?,?,?,?,?,?,?)`).bind(crypto.randomUUID(), id, sourceTurnId, kind, revision, elapsedMs, now()).run();
@@ -852,7 +901,7 @@ async function voiceEvent(request, env, id) {
       : json({ error: 'STALE_REVISION', revision: session.revision }, 409);
   }
   if (input.type === 'assistant') {
-    if (voice.behavior_version.startsWith(COOKING_PLAN_BEHAVIOR_VERSION) &&
+    if (isBridgeVersion(voice.behavior_version.split('+')[0]) &&
       (input.planCall || input.cookingCall))
       return json({ error: 'PROPOSAL_MUST_PRECEDE_SPEECH' }, 409);
     const responseId = input.responseId, itemId = input.userItemId;
@@ -874,12 +923,13 @@ async function voiceEvent(request, env, id) {
      const cost = voiceCost(usage);
      const proposed = (voice.behavior_version.startsWith(NEXT_FLOW_BEHAVIOR_VERSION) ||
        isCookingVersion(voice.behavior_version.replace(/\+voice-v1$/, ''))) && input.planCall
-       ? planFromOutput([{ type: 'function_call', name: input.planCall.name,
-         arguments: input.planCall.arguments }]) : { plan: null, reason: null, calls: [] };
+       ? mealProposal([{ type: 'function_call', name: input.planCall.name,
+         arguments: input.planCall.arguments }], session, voice.behavior_version.split('+')[0])
+       : { plan: null, reason: null, calls: [] };
      const cookingProposal = isCookingVersion(voice.behavior_version.replace(/\+voice-v1$/, '')) && input.cookingCall
        ? cookingFromOutput([{ type: 'function_call', name: input.cookingCall.name,
          arguments: input.cookingCall.arguments }], user.text,
-         voice.behavior_version.startsWith(COOKING_PLAN_BEHAVIOR_VERSION) && needsFullCookingPlan(session))
+         isBridgeVersion(voice.behavior_version.split('+')[0]) && needsFullCookingPlan(session))
        : { cooking: null, reason: null, calls: [] };
      if (cookingProposal.cooking && !session.meal_plan_json) {
        cookingProposal.cooking = null;
@@ -1129,7 +1179,7 @@ async function dispatchReturns(env) {
 
 async function streamTurn(request, env, ctx, id) {
   if (!env.OPENAI_API_KEY) return json({ error: 'MODEL_UNAVAILABLE' }, 503);
-  if (![BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, NEXT_FLOW_BEHAVIOR_VERSION, COOKING_BEHAVIOR_VERSION, COOKING_PLAN_BEHAVIOR_VERSION].includes(env.BEHAVIOR_VERSION || BEHAVIOR_VERSION)
+  if (![BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, NEXT_FLOW_BEHAVIOR_VERSION, COOKING_BEHAVIOR_VERSION, COOKING_PLAN_BEHAVIOR_VERSION, MEAL_PACKAGE_BEHAVIOR_VERSION].includes(env.BEHAVIOR_VERSION || BEHAVIOR_VERSION)
     || (env.BEHAVIOR_VERSION === CANDIDATE_BEHAVIOR_VERSION && env.ARM && env.ARM !== 'C')
     || (isNextFlow(env.BEHAVIOR_VERSION) && (!isStage1b(env) || (env.ARM && env.ARM !== 'C'))))
     return json({ error: 'INVALID_BEHAVIOR_CONFIGURATION' }, 503);
@@ -1149,7 +1199,7 @@ async function streamTurn(request, env, ctx, id) {
    const prompt = behavior.instructions + (meal
     ? `\n\nAccepted meal reference (revision ${session.meal_revision}): The customer explicitly saved this prior Snap reply as the active meal. It is a chosen plan, not evidence that any cooking step occurred.\n${meal.text.slice(0, 4000)}`
      : '') + (isNextFlow(behavior.version) && session.meal_plan_json
-     ? `\n\nCurrent application-accepted meal and shopping state (revision ${session.meal_revision}):\n${session.meal_plan_json.slice(0, 6000)}\nChecked shopping items are held or assumed as labeled, not proof of cooking.` : '') + (imageAddendum
+     ? `\n\nCurrent application-accepted meal, shopping and cooking plan (revision ${session.meal_revision}):\n${session.meal_plan_json}\nChecked shopping items are held or assumed as labeled, not proof of cooking.` : '') + (imageAddendum
     ? '\n\nFor a food photo, distinguish visible details from likely interpretation. Ask when a hidden ingredient or preparation choice changes the reconstruction. A photo cannot prove allergens or exact ingredients. Continue the same open culinary conversation.'
     : '') + equipment.text + (isCookingVersion(behavior.version) && session.meal_plan_json
     ? cookingContext(session) : '');
@@ -1168,7 +1218,7 @@ async function streamTurn(request, env, ctx, id) {
       imageAddendum ? `${behavior.version}+image-v1` : behavior.version,
       isStage1b(env) ? 'stage1b-context-v1' : CONTEXT_VERSION,
       effort, session.customer_context, equipment.memory, '[]',
-       JSON.stringify(imageIds), session.meal_plan_json?.slice(0, 6000) ?? meal?.text.slice(0, 4000) ?? null,
+       JSON.stringify(imageIds), session.meal_plan_json ?? meal?.text.slice(0, 4000) ?? null,
       meal ? session.meal_revision : null).run();
 
   const stream = new ReadableStream({
@@ -1227,12 +1277,12 @@ async function streamTurn(request, env, ctx, id) {
            if (buffer.trim()) frame(buffer);
            if (!completed) throw new Error('INCOMPLETE_STREAM');
            let proposed = isNextFlow(behavior.version)
-             ? planFromOutput(completed.output) : { plan: null, reason: null, calls: [] };
+             ? mealProposal(completed.output, session, behavior.version) : { plan: null, reason: null, calls: [] };
            let cookingProposal = isCookingVersion(behavior.version)
              ? cookingFromOutput(completed.output, accepted.text,
-               behavior.version === COOKING_PLAN_BEHAVIOR_VERSION && needsFullCookingPlan(session))
+               isBridgeVersion(behavior.version) && needsFullCookingPlan(session) && !proposed.plan)
              : { cooking: null, reason: null, calls: [] };
-           if (behavior.version === COOKING_PLAN_BEHAVIOR_VERSION &&
+           if (isBridgeVersion(behavior.version) &&
              ((proposed.reason && proposed.calls.length === 1) ||
                (cookingProposal.reason && cookingProposal.calls.length === 1))) {
              const failed = cookingProposal.reason ? cookingProposal : proposed;
@@ -1266,8 +1316,9 @@ async function streamTurn(request, env, ctx, id) {
                output_tokens_details: { reasoning_tokens: (earlierUsage.output_tokens_details?.reasoning_tokens || 0) +
                  (laterUsage.output_tokens_details?.reasoning_tokens || 0) },
              } };
-             proposed = planFromOutput(completed.output);
-             cookingProposal = cookingFromOutput(completed.output, accepted.text, needsFullCookingPlan(session));
+             proposed = mealProposal(completed.output, session, behavior.version);
+             cookingProposal = cookingFromOutput(completed.output, accepted.text,
+               needsFullCookingPlan(session) && !proposed.plan);
              const recoveryText = (completed.output || []).flatMap(item => item.content || [])
                .map(part => part.text || '').join('\n').trim();
              if (recoveryText) {
@@ -1277,14 +1328,21 @@ async function streamTurn(request, env, ctx, id) {
              if (!proposed.plan && !cookingProposal.cooking && !recoveryText)
                throw new Error('BRIDGE_RECOVERY_EMPTY');
            }
-           if (cookingProposal.cooking && !session.meal_plan_json) {
+           if (cookingProposal.cooking && !session.meal_plan_json && !proposed.plan) {
              cookingProposal.cooking = null;
              cookingProposal.reason = 'NO_ACTIVE_PLAN';
            }
+           let combinedCooking = null;
            if (proposed.plan && cookingProposal.cooking) {
-             proposed.plan = null;
-             cookingProposal.cooking = null;
-             cookingProposal.reason = 'CONFLICTING_STATE_PROPOSALS';
+             if (isPackageVersion(behavior.version)) {
+               combinedCooking = cookingProposal.cooking;
+               proposed.plan.current_action = combinedCooking.current_action;
+               cookingProposal.cooking = null;
+             } else {
+               proposed.plan = null;
+               cookingProposal.cooking = null;
+               cookingProposal.reason = 'CONFLICTING_STATE_PROPOSALS';
+             }
            }
            let toolOnlyTransition = false;
            if (!text && proposed.plan) {
@@ -1305,7 +1363,7 @@ async function streamTurn(request, env, ctx, id) {
              firstUsefulExcerpt = text.slice(0, 400);
              sendSse(controller, { type: 'delta', text });
            }
-           if (!text && cookingProposal.reason && behavior.version !== COOKING_PLAN_BEHAVIOR_VERSION) {
+           if (!text && cookingProposal.reason && !isBridgeVersion(behavior.version)) {
              const conversationalText = rejectedCookingCallText(cookingProposal.calls);
              if (conversationalText) {
                text = conversationalText;
@@ -1328,14 +1386,16 @@ async function streamTurn(request, env, ctx, id) {
            const assistantId = crypto.randomUUID();
            const assistantAt = now();
            const planJson = proposed.plan ? JSON.stringify(proposed.plan) : null;
+           const revisedJson = proposed.plan && isPackageVersion(behavior.version)
+             ? revisedCookingState(session, proposed.plan, assistantId, assistantAt, combinedCooking, turnId) : null;
            const toolCalls = [...bridgeRejectedCalls, ...proposed.calls, ...cookingProposal.calls]
              .map(call => ({ name: call.name, arguments: call.arguments,
                ...(call.rejected_reason ? { rejected_reason: call.rejected_reason } : {}) }));
            const cookingJson = cookingProposal.cooking && session.meal_plan_json
              ? nextCookingState(session, cookingProposal.cooking, assistantId, turnId, assistantAt) : null;
            const cookingEventId = crypto.randomUUID();
-           const equipmentName = cookingProposal.cooking?.equipment_change?.name.toLocaleLowerCase() ?? null;
-           const equipmentStatus = cookingProposal.cooking?.equipment_change?.status ?? null;
+           const equipmentName = (cookingProposal.cooking ?? combinedCooking)?.equipment_change?.name.toLocaleLowerCase() ?? null;
+           const equipmentStatus = (cookingProposal.cooking ?? combinedCooking)?.equipment_change?.status ?? null;
            const write = await env.DB.batch([
             env.DB.prepare(`INSERT INTO turns (id,session_id,revision,role,text,created_at,model_call_id)
               SELECT ?,s.id,?,'assistant',?,?,? FROM sessions s JOIN turn_operations o
@@ -1366,10 +1426,12 @@ async function streamTurn(request, env, ctx, id) {
              ...(planJson ? [
                env.DB.prepare(`UPDATE sessions SET meal_revision=meal_revision+1,meal_source_turn_id=?,
                  meal_accepted_at=?,meal_plan_json=?,shopping_revision=shopping_revision+1,
-                 ${isCookingVersion(behavior.version) ? 'cooking_revision=cooking_revision+1,cooking_progress_json=NULL,' : ''}updated_at=?
+                 ${isPackageVersion(behavior.version) ? 'cooking_revision=cooking_revision+1,cooking_progress_json=?,' :
+                   isCookingVersion(behavior.version) ? 'cooking_revision=cooking_revision+1,cooking_progress_json=NULL,' : ''}updated_at=?
                  WHERE id=? AND revision=? AND shopping_revision=? AND EXISTS
                  (SELECT 1 FROM turns WHERE id=? AND model_call_id=?)`)
-                 .bind(assistantId, assistantAt, planJson, assistantAt, id, revision,
+                 .bind(assistantId, assistantAt, planJson,
+                   ...(isPackageVersion(behavior.version) ? [revisedJson] : []), assistantAt, id, revision,
                    session.shopping_revision, assistantId, callId),
                env.DB.prepare(`INSERT INTO state_events (id,session_id,turn_id,revision,kind,at,details_json)
                  SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM sessions
@@ -1378,6 +1440,25 @@ async function streamTurn(request, env, ctx, id) {
                    JSON.stringify({ model_call_id: callId, assistant_turn_id: assistantId,
                      item_count: proposed.plan.sections.reduce((n, section) => n + section.items.length, 0) }),
                    id, assistantId, session.meal_revision + 1, session.shopping_revision + 1),
+             ] : []),
+             ...(planJson && combinedCooking ? [
+               env.DB.prepare(`INSERT INTO state_events (id,session_id,turn_id,revision,kind,at,details_json)
+                 SELECT ?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM sessions
+                   WHERE id=? AND meal_source_turn_id=? AND meal_revision=?)`)
+                 .bind(crypto.randomUUID(), id, turnId, revision, 'cooking_progress_accepted', assistantAt,
+                   JSON.stringify({ model_call_id: callId, assistant_turn_id: assistantId,
+                     customer_reported: Boolean(combinedCooking.customer_report),
+                     equipment_change: equipmentName ? { name: equipmentName, status: equipmentStatus } : null,
+                     combined_with_meal_package: true }), id, assistantId, session.meal_revision + 1),
+               ...(equipmentName && session.customer_id ? [env.DB.prepare(`INSERT INTO customer_equipment
+                 (customer_id,name,status,source_session_id,source_turn_id,created_at,expires_at)
+                 SELECT ?,?,?,?,?,?,s.expires_at FROM sessions s WHERE s.id=? AND EXISTS
+                 (SELECT 1 FROM sessions WHERE id=? AND meal_source_turn_id=? AND meal_revision=?)
+                 ON CONFLICT(customer_id,name) DO UPDATE SET status=excluded.status,
+                 source_session_id=excluded.source_session_id,source_turn_id=excluded.source_turn_id,
+                 created_at=excluded.created_at,expires_at=excluded.expires_at`)
+                 .bind(session.customer_id, equipmentName, equipmentStatus, id, turnId, assistantAt,
+                   id, id, assistantId, session.meal_revision + 1)] : []),
              ] : []),
              ...(cookingJson ? [
                env.DB.prepare(`UPDATE sessions SET cooking_revision=cooking_revision+1,

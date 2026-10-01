@@ -4,6 +4,7 @@ export const CANDIDATE_BEHAVIOR_VERSION = "stage1a-snap-v2";
 export const NEXT_FLOW_BEHAVIOR_VERSION = "stage1b-next-flow-v1";
 export const COOKING_BEHAVIOR_VERSION = "stage1b-cooking-v1";
 export const COOKING_PLAN_BEHAVIOR_VERSION = "stage1b-cooking-v2";
+export const MEAL_PACKAGE_BEHAVIOR_VERSION = "stage1b-meal-package-v1";
 export const CONTEXT_VERSION = "stage1a-fixtures-v1";
 export const SCENARIO_VERSION = "stage1a-scenarios-v1";
 
@@ -80,6 +81,17 @@ Answer cooking questions and trouble directly. If a plan changes, propose a revi
 Explicit customer context:\n${context.trim() || "No saved customer facts provided yet."}\nCurrent explicit input outranks prior context; occasion constraints do not become permanent facts.`;
   if (!cookingActive) return `${shared}\n\nThe customer may still be asking about the meal or shopping. Do not start cooking until they want to. Readiness to cook does not mean any physical action has happened.`;
   return `${shared}\n\nThe accepted cooking plan and reports follow separately. Keep the full plan coherent while guiding the current useful section. Progress through compatible preparation in the instructions without requiring routine acknowledgements. Do not mark a physical action complete without a customer report.`;
+}
+
+export function instructionsForMealPackage(context: string, hasAcceptedMeal = false, cookingActive = false): string {
+  const discovery = instructionsForNextFlow(context).replace(
+    'For any group meal, check guest allergies or dietary needs if unknown before finalizing the meal.',
+    'For an occasion with guests, check unknown guest allergies or dietary needs before finalizing the meal when that could change it. Do not make a routine household dinner wait for a generic allergy questionnaire.');
+  const packageRule = `\n\nStage 1B meal-package behavior: after a clear meal selection or delegated choice and the few facts that matter, take over without another confirmation. In the same primary response, call publish_meal_plan with the complete chosen meal, servings, every required shopping item, a complete measured cooking plan and useful initial Now guidance. Shopping and the recipe are one proposal. The application accepts or rejects it; do not claim it is saved before acceptance. Speak or write only a short natural transition, never the shopping list or complete recipe. No "I have groceries", "ready", "build the recipe", or "let's cook" is needed. Shopping appears first, with the complete recipe already visible below it. The recipe must be clear, short, exact and easy to cook from: natural sections with short action lines, measured ingredients where used, and material heat, time, doneness, dependency or caution only where it helps the cook. Avoid dense paragraphs, repeated details, obvious micro-steps and generic contingency or storage advice. Include necessary safety guidance. Complete does not mean verbose. Preserve defining qualities of the selected dish; do not omit an appropriate ingredient for UI simplicity. Do not invent customer facts or physical progress.\n\nWhen a customer changes ingredients, servings or the selected meal, use publish_meal_plan to revise the coherent Shopping-and-recipe package. Preserve unaffected choices. When only Now guidance or an actual customer-reported event changes, use update_cooking_progress; use full_plan null unless the actual cooking plan materially changes. The customer can cook directly from the existing recipe. "Let's cook" merely focuses useful Now guidance and is never a prerequisite, a timer start or a completion report. Answer direct questions without a state operation when no accepted state needs changing. Do not ask for routine "done" acknowledgements. A report is physical truth only when supported by the customer's latest words. If multiple pieces of equipment work, choose sensibly unless the difference is consequential. There is no such thing as behind.`;
+  if (!hasAcceptedMeal) return discovery + packageRule;
+  return discovery + packageRule + (cookingActive
+    ? '\n\nThe accepted cooking guidance and customer reports follow. Revise what matters, preserve actual reports, and keep the visible plan concise.'
+    : '\n\nThe complete accepted recipe and Shopping follow. The customer may discuss, shop or cook directly from them; do not regenerate the recipe merely because they want to cook.');
 }
 
 export function estimateUsd(model: string, input: number, cached: number, output: number): number | null {

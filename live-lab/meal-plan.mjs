@@ -21,7 +21,41 @@ export const MEAL_PLAN_TOOL = {
   },
 };
 
-export function normalizeMealPlan(raw) {
+// Stage 1B's meal decision produces Shopping and the recipe in the same proposal.
+// The older tool remains available to the previous behavior versions for rollback.
+export const MEAL_PACKAGE_TOOL = {
+  type: 'function', name: 'publish_meal_plan', strict: true,
+  description: 'Propose one complete chosen meal package after the customer has committed and necessary facts are known. Shopping, measured ingredients and the concise coordinated cooking plan belong to this same proposal. The application accepts it only while current.',
+  parameters: {
+    type: 'object', additionalProperties: false,
+    properties: {
+      meal: { type: 'string', description: 'Short name of the complete chosen meal, including accepted sides.' },
+      servings: { type: 'integer' },
+      sections: { type: 'array', description: 'Every required purchase ingredient, consolidated by grocery department.', items: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          section: { type: 'string' },
+          items: { type: 'array', items: {
+            type: 'object', additionalProperties: false,
+            properties: {
+              name: { type: 'string' }, quantity: { type: 'string' },
+              have_status: { type: 'string', enum: ['confirmed', 'assumed', 'need'],
+                description: 'Confirmed only from customer evidence; assumed only for likely staples; need otherwise.' },
+            }, required: ['name', 'quantity', 'have_status'],
+          } },
+        }, required: ['section', 'items'],
+      } },
+      full_plan: { type: 'array', description: 'The complete coordinated recipe, already available before cooking starts. Free-form culinary sections. Each directions field uses brief action lines with measured ingredients, necessary actions, material timing/heat/doneness and relevant cautions. Avoid dense prose, obvious micro-steps, generic contingency and routine acknowledgement.', items: {
+        type: 'object', additionalProperties: false,
+        properties: { title: { type: 'string' }, directions: { type: 'string' } },
+        required: ['title', 'directions'],
+      } },
+      current_action: { type: 'string', description: 'Short useful first cooking section or revised Now guidance. This is a proposed plan, never proof that physical work happened.' },
+    }, required: ['meal', 'servings', 'sections', 'full_plan', 'current_action'],
+  },
+};
+
+export function normalizeMealPlan(raw, { requireFullPlan = false, priorPlan = null } = {}) {
   let value;
   try { value = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return null; }
   if (!value || typeof value !== 'object' || typeof value.meal !== 'string' ||
@@ -46,12 +80,60 @@ export function normalizeMealPlan(raw) {
     }
     sections.push({ section: section.section.trim(), items });
   }
-  return { meal: value.meal.trim(), servings: value.servings, sections };
+  let fullPlan = null;
+  if (value.full_plan !== undefined && value.full_plan !== null) {
+    if (!Array.isArray(value.full_plan) || value.full_plan.length < 1 || value.full_plan.length > 14 ||
+      value.full_plan.some(x => !x || typeof x.title !== 'string' || !x.title.trim() || x.title.length > 80 ||
+        typeof x.directions !== 'string' || !x.directions.trim() || x.directions.length > 1400)) return null;
+    fullPlan = value.full_plan.map(x => ({ title: x.title.trim(), directions: x.directions.trim() }));
+    if (JSON.stringify(fullPlan).length > 10000) return null;
+    if (typeof value.current_action !== 'string' || !value.current_action.trim() ||
+      value.current_action.length > 1200) return null;
+  }
+  if (requireFullPlan && !fullPlan) return null;
+  const plan = { meal: value.meal.trim(), servings: value.servings, sections };
+  if (fullPlan) {
+    plan.full_plan = fullPlan;
+    plan.current_action = value.current_action.trim();
+  }
+  return priorPlan ? reconcileShopping(priorPlan, plan) : plan;
 }
 
-export function planFromOutput(output) {
+function shoppingKey(item) {
+  return `${item.name.trim().toLocaleLowerCase()}\u0000${item.quantity.trim().toLocaleLowerCase()}`;
+}
+
+export function reconcileShopping(prior, plan) {
+  const existing = new Map();
+  for (const section of prior?.sections ?? []) for (const item of section.items ?? []) {
+    const key = shoppingKey(item);
+    existing.set(key, [...(existing.get(key) ?? []), item]);
+  }
+  const oldQuantities = new Map();
+  for (const section of prior?.sections ?? []) for (const item of section.items ?? [])
+    oldQuantities.set(item.name.trim().toLocaleLowerCase(), item.quantity.trim().toLocaleLowerCase());
+  for (const section of plan.sections) for (const item of section.items) {
+    const priorItem = existing.get(shoppingKey(item))?.shift();
+    if (priorItem) {
+      item.id = priorItem.id;
+      if (priorItem.customer_edited || item.have_status === 'assumed') {
+        item.checked = priorItem.checked;
+        item.have_status = priorItem.have_status;
+      }
+      if (priorItem.customer_edited) item.customer_edited = true;
+    } else if (oldQuantities.has(item.name.trim().toLocaleLowerCase()) &&
+      oldQuantities.get(item.name.trim().toLocaleLowerCase()) !== item.quantity.trim().toLocaleLowerCase()) {
+      item.checked = false;
+      item.have_status = 'need';
+      item.quantity_changed = true;
+    }
+  }
+  return plan;
+}
+
+export function planFromOutput(output, options = {}) {
   const calls = (output || []).filter(item => item.type === 'function_call' && item.name === MEAL_PLAN_TOOL.name);
   if (calls.length !== 1) return { plan: null, reason: calls.length ? 'MULTIPLE_PLAN_CALLS' : null, calls };
-  const plan = normalizeMealPlan(calls[0].arguments);
+  const plan = normalizeMealPlan(calls[0].arguments, options);
   return { plan, reason: plan ? null : 'INVALID_PLAN_PROPOSAL', calls };
 }

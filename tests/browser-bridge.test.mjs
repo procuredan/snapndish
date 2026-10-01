@@ -118,3 +118,48 @@ test('real browser executes voice state sync, tool-result ordering and accepted 
       assert.match(output, /data-regression="PASS"/, output.match(/data-regression="[^"]*/)?.[0] || output.slice(-600));
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });
+
+test('real browser shows accepted Shopping and complete recipe before optional Now focus',
+  { skip: !process.env.SNAP_BROWSER_TEST && 'Set SNAP_BROWSER_TEST=1 to run Chrome' }, () => {
+    assert.ok(chrome, 'Chrome is required for the browser regression');
+    const fixture = String.raw`
+<script>
+(async()=>{
+  const fail=message=>{document.body.dataset.regression='FAIL: '+message};
+  try {
+    const plan={meal:'Lemon chicken with rice and cucumber salad',servings:2,
+      sections:[{section:'Produce',items:[{id:'33333333-3333-4333-8333-333333333333',
+        name:'Cucumber',quantity:'1',checked:false,have_status:'need'}]}],
+      full_plan:[{title:'Rice',directions:'Cook 1 cup rice until tender.'},
+        {title:'Chicken and salad',directions:'Cook 1 lb chicken safely; slice cucumber and plate.'}],
+      current_action:'Start the rice.'};
+    session={id:'11111111-1111-4111-8111-111111111111',revision:1,turns:[],
+      meal_plan:plan,meal_revision:1,shopping_revision:1,cooking_progress:null,cooking_revision:1};
+    render();
+    if(shopping.hidden||planDetails.hidden||!planDetails.open)throw Error('Shopping was not visible');
+    if(recipe.hidden||fullPlan.hidden||!fullPlan.textContent.includes('Cook 1 cup rice'))
+      throw Error('complete recipe was not visible at package acceptance');
+    if(!nowPanel.hidden)throw Error('Now appeared before customer asked to focus cooking');
+    session.cooking_progress={meal_revision:1,current_action:'Start the rice.',full_plan:plan.full_plan,
+      remaining_components:['Rice','Chicken and salad'],reports:[]};
+    session.cooking_revision=2;render();
+    if(nowPanel.hidden||!nowText.textContent.includes('Start the rice'))throw Error('Now focus missing');
+    if(recipe.hidden||!fullPlan.textContent.includes('Cook 1 cup rice'))throw Error('recipe disappeared');
+    if(planDetails.hidden||shopping.hidden)throw Error('Shopping was unavailable after focus');
+    document.body.dataset.regression='PASS';
+  }catch(error){fail(error.stack||String(error))}
+})();
+</script>`;
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'snapndish-package-browser-'));
+    try {
+      const file = path.join(directory, 'package.html');
+      fs.writeFileSync(file, page('chat', 'browser-test', true, true, true).replace('</body>', fixture + '</body>'));
+      let output;
+      try { output = execFileSync(chrome, ['--headless=new', '--no-first-run', '--no-default-browser-check',
+        '--disable-gpu', '--disable-background-networking', '--virtual-time-budget=6000',
+        `--user-data-dir=${path.join(directory, 'chrome-profile')}`, '--dump-dom', `file://${file}`],
+      { encoding: 'utf8', timeout: 35_000, stdio: ['ignore', 'pipe', 'ignore'] }); }
+      catch (error) { output = error.stdout || error.output?.[1] || ''; }
+      assert.match(output, /data-regression="PASS"/, output.match(/data-regression="[^"]*/)?.[0] || output.slice(-600));
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
