@@ -1,18 +1,19 @@
 {
-  "name": "snapndish-stage1b-staging",
+  "name": "snapndish-stage1a-live",
   "main": "live-lab/worker.mjs",
   "compatibility_date": "2026-06-24",
-  "workers_dev": true,
+  "workers_dev": false,
   "preview_urls": false,
+  "routes": [{ "pattern": "app.snapndish.com", "custom_domain": true }],
   "observability": { "enabled": false },
   "triggers": { "crons": ["* * * * *"] },
   "d1_databases": [{
     "binding": "DB",
-    "database_name": "snapndish-stage1b-staging",
-    "database_id": "e3181d3c-3def-41dd-b08e-0b04ffcd2663",
+    "database_name": "snapndish-stage1a-live",
+    "database_id": "25bf368f-0067-46c2-a479-de6226b7ea85",
     "migrations_dir": "stage1b/migrations"
   }],
-  "r2_buckets": [{ "binding": "IMAGES", "bucket_name": "snapndish-stage1b-staging-images" }],
+  "r2_buckets": [{ "binding": "IMAGES", "bucket_name": "snapndish-production-images" }],
   "secrets": { "required": [
     "OPENAI_API_KEY",
     "LAB_ACCESS_CODE",
@@ -22,7 +23,7 @@
     "VAPID_SUBJECT"
   ] },
   "vars": {
-    "RELEASE_ENV": "staging",
+    "RELEASE_ENV": "production",
     "STAGE1B_ENABLED": "true",
     "MODEL": "gpt-6-astra",
     "REASONING_EFFORT": "medium",

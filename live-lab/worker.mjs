@@ -98,7 +98,8 @@ async function canUseSession(request, env, id) {
 }
 function html(kind, env) {
   const nonce = randomToken(15);
-  return new Response(page(kind, nonce, isStage1b(env), isNextFlow(env.BEHAVIOR_VERSION), isPackageVersion(env.BEHAVIOR_VERSION)), { headers: {
+  return new Response(page(kind, nonce, isStage1b(env), isNextFlow(env.BEHAVIOR_VERSION),
+    isPackageVersion(env.BEHAVIOR_VERSION), env.RELEASE_ENV === 'production'), { headers: {
     ...BASE_HEADERS,
     'Permissions-Policy': isStage1b(env) ? 'camera=(self), microphone=(self), geolocation=()' : BASE_HEADERS['Permissions-Policy'],
     'Content-Type': 'text/html; charset=utf-8',
@@ -1111,7 +1112,7 @@ async function scheduleReturn(request, env, id) {
   const session = await getSession(env.DB, id);
   if (!customer || !session || session.customer_id !== customer.id) return json({ error: 'NOT_FOUND' }, 404);
   const input = await bodyJson(request);
-  if (!Number.isInteger(input.minutes) || input.minutes < 1 || input.minutes > 120)
+  if (!Number.isInteger(input.minutes) || input.minutes < (env.RELEASE_ENV === 'production' ? 5 : 1) || input.minutes > 120)
     return json({ error: 'INVALID_REMINDER_TIME' }, 400);
   const subscription = await env.DB.prepare('SELECT id FROM push_subscriptions WHERE customer_id=? LIMIT 1')
     .bind(customer.id).first();
@@ -1558,7 +1559,8 @@ async function streamTurn(request, env, ctx, id) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (url.pathname === '/health') return json({ status: 'ok', stage: isStage1b(env) ? '1B-staging' : '1A-live-lab', model: env.MODEL || 'gpt-6-astra',
+    if (url.pathname === '/health') return json({ status: 'ok', stage: isStage1b(env)
+      ? env.RELEASE_ENV === 'production' ? '1B-production' : '1B-staging' : '1A-live-lab', model: env.MODEL || 'gpt-6-astra',
       behavior_version: env.BEHAVIOR_VERSION || BEHAVIOR_VERSION,
       context_version: isStage1b(env) ? 'stage1b-context-v1' : CONTEXT_VERSION, scenario_version: SCENARIO_VERSION });
     if (!env.DB || !env.LAB_ACCESS_CODE || !env.COOKIE_SIGNING_KEY) return json({ error: 'LAB_NOT_CONFIGURED' }, 503);

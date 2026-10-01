@@ -128,6 +128,28 @@ test('all rendered pages contain parseable client scripts', () => {
   assert.doesNotThrow(() => new Script(html.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1]));
 });
 
+test('production presentation omits staging and test labels without changing Stage 1B behavior', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.RELEASE_ENV = 'production';
+  e.BEHAVIOR_VERSION = 'stage1b-meal-package-v2';
+  const home = await (await worker.fetch(req('/'), e, context())).text();
+  const health = await (await worker.fetch(req('/health'), e, context())).json();
+  const review = await (await worker.fetch(req('/review'), e, context())).text();
+  const created = await worker.fetch(req('/api/sessions', 'POST', { context: '' }), e, context());
+  const { id } = await created.json();
+  const cookie = created.headers.getSetCookie().map(x => x.split(';')[0]).join('; ');
+  assert.equal(health.stage, '1B-production');
+  assert.equal(health.behavior_version, 'stage1b-meal-package-v2');
+  assert.match(home, /<title>Snap n Dish<\/title>/);
+  assert.match(home, /<option value="5">In 5 minutes<\/option>/);
+  assert.doesNotMatch(home + review + JSON.stringify(health), /staging|\(test\)|Live Lab|private test records/i);
+  assert.equal((await worker.fetch(req('/api/review/sessions'), e, context())).status, 401);
+  assert.equal((await worker.fetch(req(`/api/sessions/${id}/return`, 'POST', { minutes: 1 }, cookie), e, context())).status, 400);
+  const staging = page('chat', 'testnonce', true, true, true);
+  assert.match(staging, /In 1 minute \(test\)/);
+});
+
 test('Stage 1B package keeps Shopping and a complete recipe together, then preserves edits and actual reports', async () => {
   const e = env();
   e.STAGE1B_ENABLED = 'true';
