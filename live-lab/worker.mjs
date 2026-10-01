@@ -4,6 +4,7 @@ import { stripJpegMetadata } from './jpeg.mjs';
 import { serviceWorker } from './push-sw.mjs';
 import { MEAL_PLAN_TOOL, MEAL_PACKAGE_TOOL, normalizeMealPlan, planFromOutput } from './meal-plan.mjs';
 import { COOKING_PROGRESS_TOOL, COOKING_PROGRESS_TOOL_V2, cookingFromOutput } from './cooking-progress.mjs';
+import { realtimeFailureDiagnostic } from './realtime-diagnostics.mjs';
 
 const DAY = 86_400_000;
 const VOICE_MODEL = 'gpt-realtime-2.1';
@@ -690,6 +691,7 @@ async function startVoice(request, env, id) {
   ]);
   if (claimed[0].meta.changes !== 1) return json({ error: 'VOICE_ACTIVE' }, 409);
   const began = performance.now();
+  let upstreamFailure = null;
   try {
     const form = new FormData();
     form.set('sdp', input.sdp);
@@ -704,7 +706,17 @@ async function startVoice(request, env, id) {
     const safetyId = await mac(env.COOKIE_SIGNING_KEY, session.customer_id || id);
     const response = await fetch('https://api.openai.com/v1/realtime/calls', { method: 'POST',
       headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, 'OpenAI-Safety-Identifier': safetyId }, body: form });
-    if (!response.ok) throw new Error(`HTTP_${response.status}`);
+    if (!response.ok) {
+      upstreamFailure = await realtimeFailureDiagnostic(response, {
+        model: VOICE_MODEL, behaviorVersion: voiceBehaviorVersion, voice: 'marin',
+        transcriptionModel: 'gpt-live-transcribe', turnDetection: 'semantic_vad',
+        tools: isNextFlow(behavior.version) ? toolsFor(behavior.version) : [],
+        instructionsPresent: Boolean(instructions), acceptedMealPresent: Boolean(session.meal_plan_json),
+        transcriptPresent: Boolean(transcript), customerContextPresent: Boolean(session.customer_context),
+        sdpPresent: Boolean(input.sdp),
+      });
+      throw new Error(`HTTP_${response.status}`);
+    }
     const sdp = await response.text();
     if (!sdp.startsWith('v=0')) throw new Error('INVALID_SDP_ANSWER');
     const connectMs = Math.round(performance.now() - began);
@@ -729,6 +741,8 @@ async function startVoice(request, env, id) {
       env.DB.prepare('UPDATE sessions SET active_voice_id=NULL,active_voice_until=NULL WHERE id=? AND active_voice_id=?')
         .bind(id, voiceId),
     ]);
+    if (upstreamFailure) await event(env.DB, id, null, session.revision, 'voice_init_failed',
+      { voice_session_id: voiceId, ...upstreamFailure });
     return json({ error: code }, 502);
   }
 }

@@ -7,6 +7,7 @@ import worker from '../live-lab/worker.mjs';
 import closedStage1b from '../stage1b/closed.mjs';
 import { page } from '../live-lab/ui.mjs';
 import { normalizeMealPlan } from '../live-lab/meal-plan.mjs';
+import { safeRealtimeMessage } from '../live-lab/realtime-diagnostics.mjs';
 
 class TestDB {
   constructor() {
@@ -871,6 +872,77 @@ test('Stage 1B spoken transcript uses the same context, stores usage, and reject
   assert.equal(stopped.active_voice_id, null);
   assert.equal((await worker.fetch(req(`/api/sessions/${id}/voice/events`, 'POST',
     { voiceSessionId: voiceId, type: 'user', itemId: 'item_voice_3', transcript: 'Late' }, cookie), e, context())).status, 409);
+});
+
+test('Realtime initialization preserves only bounded provider diagnostics', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-meal-package-v2';
+  const { id, cookie } = await createVisitorSession(e, 'Synthetic private customer fact');
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    error: {
+      type: 'invalid_request_error', code: 'invalid_function_parameters',
+      param: 'session.tools[0].parameters',
+      message: "Invalid schema for function 'publish_meal_plan': In context=('properties', 'full_plan', 'items'), 'additionalProperties' is required to be supplied and to be false.",
+      secret: 'sk-proj-synthetic-private-value',
+      transcript: 'Synthetic private customer fact',
+    },
+  }), { status: 400, headers: { 'x-request-id': 'req_test-123' } });
+  try {
+    const response = await worker.fetch(req(`/api/sessions/${id}/voice/start`, 'POST',
+      { sdp: 'v=0\r\noffer-private-marker', expectedRevision: 0 }, cookie), e, context());
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), { error: 'HTTP_400' });
+  } finally { globalThis.fetch = original; }
+  const row = e.DB.raw.prepare("SELECT details_json FROM state_events WHERE kind='voice_init_failed'").get();
+  assert.ok(row);
+  const diagnostic = JSON.parse(row.details_json);
+  assert.equal(diagnostic.upstream_status, 400);
+  assert.equal(diagnostic.openai_error_type, 'invalid_request_error');
+  assert.equal(diagnostic.openai_error_code, 'invalid_function_parameters');
+  assert.equal(diagnostic.openai_error_param, 'session.tools[0].parameters');
+  assert.match(diagnostic.openai_error_message, /additionalProperties is required to be false/);
+  assert.equal(diagnostic.openai_request_id, 'req_test-123');
+  assert.equal(diagnostic.model, 'gpt-realtime-2.1');
+  assert.equal(diagnostic.behavior_version, 'stage1b-meal-package-v2+voice-bridge-v2');
+  assert.equal(diagnostic.endpoint, '/v1/realtime/calls');
+  assert.equal(diagnostic.session_type, 'realtime');
+  assert.equal(diagnostic.voice, 'marin');
+  assert.equal(diagnostic.transcription_model, 'gpt-live-transcribe');
+  assert.equal(diagnostic.turn_detection, 'semantic_vad');
+  assert.deepEqual(diagnostic.tool_schemas.map(t => t.name), ['publish_meal_plan', 'update_cooking_progress']);
+  assert.ok(diagnostic.tool_schemas.every(t => /^[a-f0-9]{16}$/.test(t.schema_fingerprint)));
+  assert.equal(diagnostic.field_presence.customer_context, true);
+  assert.equal(diagnostic.field_presence.accepted_meal, false);
+  assert.doesNotMatch(row.details_json, /sk-proj|Synthetic private|offer-private-marker|Authorization|instructionsFor/);
+  assert.equal(e.DB.raw.prepare('SELECT error_code FROM voice_sessions').get().error_code, 'HTTP_400');
+  assert.equal(e.DB.raw.prepare('SELECT active_voice_id FROM sessions WHERE id=?').get(id).active_voice_id, null);
+});
+
+test('Realtime initialization with malformed or hostile errors records no arbitrary content', async () => {
+  assert.equal(safeRealtimeMessage("Invalid value for 'session.instructions': Bearer sk-proj-example Customer: private"),
+    'Invalid value or type for session.instructions.');
+  assert.equal(safeRealtimeMessage('Customer: private meal and sk-proj-example'), null);
+  for (const body of ['<html>sk-proj-private Customer: secret meal</html>',
+    JSON.stringify({ error: { type: 'private words here', code: 'sk-proj-private',
+      message: 'Customer: secret meal', param: 'sk-proj-private' } })]) {
+    const e = env();
+    e.STAGE1B_ENABLED = 'true';
+    const { id, cookie } = await createVisitorSession(e, '');
+    const original = globalThis.fetch;
+    globalThis.fetch = async () => new Response(body, { status: 400,
+      headers: { 'x-request-id': 'req.invalid' } });
+    try {
+      const response = await worker.fetch(req(`/api/sessions/${id}/voice/start`, 'POST',
+        { sdp: 'v=0\r\noffer', expectedRevision: 0 }, cookie), e, context());
+      assert.equal(response.status, 502);
+      assert.deepEqual(await response.json(), { error: 'HTTP_400' });
+    } finally { globalThis.fetch = original; }
+    const diagnostic = e.DB.raw.prepare("SELECT details_json FROM state_events WHERE kind='voice_init_failed'").get().details_json;
+    assert.doesNotMatch(diagnostic, /sk-proj|Customer: secret|req\.invalid|private words here|<html>/);
+    assert.equal(JSON.parse(diagnostic).openai_error_message, null);
+  }
 });
 
 test('Stage 1B closed-app return records push acceptance and opens only the owned conversation', async () => {
