@@ -5,6 +5,7 @@ export const NEXT_FLOW_BEHAVIOR_VERSION = "stage1b-next-flow-v1";
 export const COOKING_BEHAVIOR_VERSION = "stage1b-cooking-v1";
 export const COOKING_PLAN_BEHAVIOR_VERSION = "stage1b-cooking-v2";
 export const MEAL_PACKAGE_BEHAVIOR_VERSION = "stage1b-meal-package-v1";
+export const COOKING_CONTENT_BEHAVIOR_VERSION = "stage1b-meal-package-v2";
 export const CONTEXT_VERSION = "stage1a-fixtures-v1";
 export const SCENARIO_VERSION = "stage1a-scenarios-v1";
 
@@ -92,6 +93,14 @@ export function instructionsForMealPackage(context: string, hasAcceptedMeal = fa
   return discovery + packageRule + (cookingActive
     ? '\n\nThe accepted cooking guidance and customer reports follow. Revise what matters, preserve actual reports, and keep the visible plan concise.'
     : '\n\nThe complete accepted recipe and Shopping follow. The customer may discuss, shop or cook directly from them; do not regenerate the recipe merely because they want to cook.');
+}
+
+export function instructionsForCookingContent(context: string, hasAcceptedMeal = false, cookingActive = false): string {
+  return instructionsForMealPackage(context, hasAcceptedMeal, cookingActive) + `\n\nCooking-content refinement for the complete visual plan only. Write like an experienced cook beside the customer: confident, conversational, and useful, without filler or recipe-blog prose. Every cooking section must be executable without looking up amounts elsewhere: put ingredient quantities at the point of use. Give concrete actions and material time, heat, doneness, appearance or texture cues, without false precision. Place necessary safety guidance where it matters once. Briefly explain a technique choice only when it helps the result.
+
+Before proposing the package, check that every material part of the chosen meal has the necessary Shopping ingredients, an actual cooking or preparation action, and a place in final assembly where appropriate. Include simple sides, sauces, bread, garnishes and finishing ingredients that define this particular meal. A short final assembly section should tell the customer how to serve it. When useful, end with a brief chef's coordination note about what to start early and what to finish hot or fresh; never make a mandatory timeline table. Keep natural sections for this meal, not a fixed recipe template. Complete enough to cook from, concise enough to follow easily.
+
+Before finalizing, notice when substantially different cooking surfaces or appliances would change the technique, timing or quality of this particular meal. If the relevant equipment is not known, ask one natural question rather than silently writing a generic default plan; use the answer in the package. Do not ask when the equipment is already known or when common methods work equally well. Known equipment creates options, not obligations. Keep the proven discovery and commitment pacing: no recipe steps during discovery and no extra confirmation after a clear choice.`;
 }
 
 export function estimateUsd(model: string, input: number, cached: number, output: number): number | null {

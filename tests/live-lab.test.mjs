@@ -236,6 +236,58 @@ test('a Stage 1B meal package rejects missing or malformed cooking sections', ()
     { requireFullPlan: true }).full_plan.length, 1);
 });
 
+test('cooking-content v2 keeps the package authority path and voice bridge', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-meal-package-v2';
+  const visitor = await createVisitorSession(e, 'Two people. Blackstone and rice cooker.');
+  const proposal = { meal: 'Pork souvlaki with rice, tzatziki and salad', servings: 2,
+    sections: [{ section: 'Meat', items: [{ name: 'Pork loin', quantity: '1 lb', have_status: 'need' }] }],
+    full_plan: [{ title: 'Cook pork', directions: 'Cook 1 lb pork on the Blackstone until done.' },
+      { title: 'Plate', directions: 'Serve pork with rice, tzatziki and salad.' }],
+    current_action: 'Start the rice and tzatziki.' };
+  const original = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (_url, init) => {
+    calls++;
+    const body = JSON.parse(init.body);
+    assert.match(body.instructions, /quantities at the point of use/i);
+    assert.match(body.instructions, /Shopping ingredients, an actual cooking or preparation action/i);
+    assert.equal(body.tools[0].name, 'publish_meal_plan');
+    return providerStream('Pork souvlaki with rice, tzatziki and salad it is.',
+      [{ type: 'function_call', name: 'publish_meal_plan', arguments: JSON.stringify(proposal) }]);
+  };
+  try {
+    const turn = await worker.fetch(req(`/api/sessions/${visitor.id}/turns`, 'POST',
+      { text: 'Pork souvlaki for two, please.', turnId: crypto.randomUUID(), expectedRevision: 0 }, visitor.cookie),
+    e, context());
+    assert.match(await turn.text(), /"type":"complete"/);
+    const saved = await (await worker.fetch(req(`/api/sessions/${visitor.id}`, 'GET', undefined,
+      visitor.cookie), e, context())).json();
+    assert.deepEqual(saved.meal_plan.full_plan, proposal.full_plan);
+    assert.equal(saved.cooking_progress, null);
+    assert.equal(calls, 1, 'one primary culinary call');
+    const html = await (await worker.fetch(req('/'), e, context())).text();
+    assert.match(html, /data-meal-package="true"/);
+  } finally { globalThis.fetch = original; }
+
+  const second = await createVisitorSession(e, 'Two people. Blackstone and rice cooker.');
+  globalThis.fetch = async (_url, options) => {
+    const setup = JSON.parse(options.body.get('session'));
+    assert.match(setup.instructions, /quantities at the point of use/i);
+    assert.equal(setup.tools[0].name, 'publish_meal_plan');
+    return new Response('v=0\r\nanswer', { status: 201 });
+  };
+  try {
+    const response = await worker.fetch(req(`/api/sessions/${second.id}/voice/start`, 'POST',
+      { sdp: 'v=0\r\noffer', expectedRevision: 0 }, second.cookie), e, context());
+    assert.equal(response.status, 201);
+    const connected = await response.json();
+    assert.equal(connected.behaviorVersion, 'stage1b-meal-package-v2+voice-bridge-v2');
+    assert.match(connected.cookingSyncInstructions, /quantities at the point of use/i);
+  } finally { globalThis.fetch = original; }
+});
+
 test('a revised package applies new ingredient facts but preserves manual Shopping choices', () => {
   const prior = normalizeMealPlan({ meal: 'Dinner', servings: 2,
     sections: [{ section: 'Pantry', items: [

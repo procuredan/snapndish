@@ -189,6 +189,15 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 - **Rollback / recovery:** Before release, record the verified active functional Stage 1B Worker version, closed fallback, isolated D1 Time Travel bookmark and migration ledger. Roll back only `snapndish-stage1b-staging` to the functional version for behavior failure or the closed version for access/privacy containment. JSON additions require no migration; preserve private evidence and treat any D1 restore as a separate incident decision. GitHub CI is verification only, and this decision does not authorize Stage 1A or production deployment.
 - **Supersedes:** `SNDISH-016`–`SNDISH-019` only where they defer recipe creation until shopping completion or “Let's cook,” hide the complete plan until cooking, require routine acknowledgements, or clear all shopping/progress state on a package revision. Their isolation, authority, safety, evidence and rollback boundaries remain.
 
+### SNDISH-021 — Experienced-cook content for the complete plan
+
+- **Date / owner:** 2026-10-01; Snap n Dish product owner, via the Cooking Content Refinement brief.
+- **Decision:** Keep SNDISH-020's automatic meal package and accepted-state authority. Refine the free-form complete plan so each section has quantities where used, concrete actions and material doneness cues, every defining meal component reaches preparation and assembly, and brief culinary judgment replaces manual-style prose. A short coordination note is useful when it improves execution. Ask about equipment before finalizing only when an unknown choice materially changes this meal's technique; known ownership is an option, not a mandate. Check component coherence within the same primary culinary response, without a second critic call or recipe taxonomy. Preserve discovery pacing and broad culinary possibility.
+- **Reason:** Owner testing found that the v1 package and Shopping handoff work, but the plan can still feel like a cookbook specification and make the cook hunt for amounts or omitted components.
+- **Excluded alternative:** Fixed souvlaki template, new recipe engine, mandatory recipe sections, extra model, intent classifier, workflow machine, or a change to Stage 1A and `app.snapndish.com`.
+- **Depends / reconsider:** Versioned fixed and held-out culinary comparisons across meal types, local and rendered staging regressions, owner cooking judgment, and the existing Stage 1B rollback and privacy gates. No commercial or production authority is granted.
+- **Supersedes:** None; this narrows the content quality target within SNDISH-020 while preserving its architecture and authority boundaries.
+
 ## Open decisions — no authority may be invented
 
 1. Stage 1A quality result and owner benchmark/human review; the current prototype tests are not that decision.
