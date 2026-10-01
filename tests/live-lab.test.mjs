@@ -6,7 +6,8 @@ import { Script } from 'node:vm';
 import worker from '../live-lab/worker.mjs';
 import closedStage1b from '../stage1b/closed.mjs';
 import { page } from '../live-lab/ui.mjs';
-import { normalizeMealPlan } from '../live-lab/meal-plan.mjs';
+import { MEAL_PACKAGE_TOOL, normalizeMealPlan } from '../live-lab/meal-plan.mjs';
+import { COOKING_PROGRESS_TOOL_V2 } from '../live-lab/cooking-progress.mjs';
 import { safeRealtimeMessage } from '../live-lab/realtime-diagnostics.mjs';
 
 class TestDB {
@@ -368,7 +369,7 @@ test('Talk It accepts the complete package before speaking and reuses it on reco
   const original = globalThis.fetch;
   globalThis.fetch = async (_url, options) => {
     const setup = JSON.parse(options.body.get('session'));
-    assert.equal(setup.tools[0].strict, true);
+    assert.equal(Object.hasOwn(setup.tools[0], 'strict'), false);
     assert.ok(setup.tools[0].parameters.properties.full_plan);
     return new Response('v=0\r\nanswer', { status: 201 });
   };
@@ -430,6 +431,46 @@ test('Talk It accepts the complete package before speaking and reuses it on reco
       { sdp: 'v=0\r\noffer', expectedRevision: saved.revision }, cookie), e, context());
     assert.equal(reopened.status, 201);
   } finally { globalThis.fetch = original; }
+});
+
+test('Realtime tools omit Responses-only strict without changing either tool schema', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-meal-package-v2';
+  const voice = await createVisitorSession(e, '');
+  const original = globalThis.fetch;
+  let realtimeSeen = false, responsesSeen = false;
+  globalThis.fetch = async (url, options) => {
+    if (url === 'https://api.openai.com/v1/realtime/calls') {
+      const setup = JSON.parse(options.body.get('session'));
+      assert.deepEqual(setup.tools.map(tool => tool.name), ['publish_meal_plan', 'update_cooking_progress']);
+      assert.ok(setup.tools.every(tool => !Object.hasOwn(tool, 'strict')));
+      assert.deepEqual(setup.tools[0].parameters, MEAL_PACKAGE_TOOL.parameters);
+      assert.deepEqual(setup.tools[1].parameters, COOKING_PROGRESS_TOOL_V2.parameters);
+      realtimeSeen = true;
+      return new Response('v=0\r\nanswer', { status: 201 });
+    }
+    assert.equal(url, 'https://api.openai.com/v1/responses');
+    const setup = JSON.parse(options.body);
+    assert.deepEqual(setup.tools.map(tool => tool.strict), [true, true]);
+    assert.deepEqual(setup.tools[0].parameters, MEAL_PACKAGE_TOOL.parameters);
+    assert.deepEqual(setup.tools[1].parameters, COOKING_PROGRESS_TOOL_V2.parameters);
+    responsesSeen = true;
+    return providerStream('Try lemon chicken with potatoes or ginger chicken with rice.');
+  };
+  try {
+    const started = await worker.fetch(req(`/api/sessions/${voice.id}/voice/start`, 'POST',
+      { sdp: 'v=0\r\noffer', expectedRevision: 0 }, voice.cookie), e, context());
+    assert.equal(started.status, 201);
+    const text = await createVisitorSession(e, '');
+    const answer = await worker.fetch(req(`/api/sessions/${text.id}/turns`, 'POST',
+      { text: 'Chicken thighs tonight', turnId: crypto.randomUUID(), expectedRevision: 0 }, text.cookie), e, context());
+    assert.match(await answer.text(), /"type":"complete"/);
+  } finally { globalThis.fetch = original; }
+  assert.equal(realtimeSeen, true);
+  assert.equal(responsesSeen, true);
+  assert.equal(MEAL_PACKAGE_TOOL.strict, true);
+  assert.equal(COOKING_PROGRESS_TOOL_V2.strict, true);
 });
 
 test('a cooking-only proposal cannot fork the accepted package recipe', async () => {
@@ -1474,7 +1515,7 @@ test('Stage 1B bridge rejects the observed string-shaped cooking plan, then acce
   const original = globalThis.fetch;
   globalThis.fetch = async (_url, options) => {
     const setup = JSON.parse(options.body.get('session'));
-    assert.equal(setup.tools[1].strict, true);
+    assert.equal(Object.hasOwn(setup.tools[1], 'strict'), false);
     assert.match(setup.instructions, /call the narrow tool first/i);
     return new Response('v=0\r\nanswer', { status: 201 });
   };

@@ -11,4 +11,12 @@
 
 ## Observations
 
-Pending local, CI and real staging verification. Keep exact customer conversations and provider responses in protected telemetry, not this file.
+The isolated staging diagnostic Worker `ed94df08-dd1a-4c51-b169-670db5806a6c` reproduced HTTP 400 in real Chrome microphone starts with and without an accepted meal. Both protected events reported `invalid_request_error` / `unknown_parameter` at `session.tools[0].strict`. No OpenAI request ID was returned. The prior working voice tool definitions lacked top-level `strict`; Meal Package V2's text Responses tools require it. The current production Worker remains `8b68fce3-7845-412e-9c1a-80e78293d17b`.
+
+## Realtime-only correction pre-change record — 2026-10-01
+
+- **Authority and extension:** The Worker constructs the Realtime session and text Responses requests from shared, versioned tool definitions. Serialize a Realtime-only copy without top-level `strict`; keep the canonical tool schemas and text Responses definitions unchanged. The backend remains the authority for accepted meal and cooking state.
+- **Regression surface:** Realtime initialization, tool calls and spoken continuation after authoritative tool results; text tool strictness; sanitized failure diagnostics; shared transcript and accepted state. Do not change models, audio settings, instructions, Meal Package V2 or production resources.
+- **Proof plan:** Assert the actual Realtime request omits `strict` on both tools while their JSON schemas match the text tools, assert the actual Responses request retains strictness, run the complete local suite and CI, then deploy only the exact candidate to isolated staging. Test real Chrome microphone starts before and after a meal package, two spoken turns, an application-tool acceptance before a spoken success claim, reload continuity and protected failure telemetry.
+- **Expected staging behavior:** Realtime connects with the existing model and voice; text/Shopping/cooking behavior is unchanged. A new upstream failure remains sanitized and stops further correction.
+- **Rollback:** Before deployment record the active isolated Stage 1B Worker version and D1 recovery point. This change has no migration. Restore that Worker version if the correction regresses staging; leave production on `8b68fce3-7845-412e-9c1a-80e78293d17b`.

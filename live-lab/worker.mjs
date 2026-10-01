@@ -22,6 +22,8 @@ const toolsFor = version => isPackageVersion(version)
   ? [MEAL_PACKAGE_TOOL, COOKING_PROGRESS_TOOL_V2] : version === COOKING_PLAN_BEHAVIOR_VERSION
   ? [MEAL_PLAN_TOOL, COOKING_PROGRESS_TOOL_V2] : version === COOKING_BEHAVIOR_VERSION
     ? [MEAL_PLAN_TOOL, COOKING_PROGRESS_TOOL] : version === NEXT_FLOW_BEHAVIOR_VERSION ? [MEAL_PLAN_TOOL] : [];
+// Realtime function tools do not accept the Responses-only top-level strict field.
+const realtimeToolsFor = version => toolsFor(version).map(({ strict: _strict, ...tool }) => tool);
 const BASE_HEADERS = {
   'Cache-Control': 'no-store',
   'X-Content-Type-Options': 'nosniff',
@@ -695,9 +697,10 @@ async function startVoice(request, env, id) {
   try {
     const form = new FormData();
     form.set('sdp', input.sdp);
+    const realtimeTools = isNextFlow(behavior.version) ? realtimeToolsFor(behavior.version) : [];
      form.set('session', JSON.stringify({ type: 'realtime', model: VOICE_MODEL,
        instructions, output_modalities: ['audio'],
-       ...(isNextFlow(behavior.version) ? { tools: toolsFor(behavior.version),
+       ...(isNextFlow(behavior.version) ? { tools: realtimeTools,
          tool_choice: behavior.version === COOKING_BEHAVIOR_VERSION && session.cooking_progress_json ? 'required' : 'auto' } : {}),
        audio: {
         input: { transcription: { model: 'gpt-live-transcribe' }, turn_detection: { type: 'semantic_vad' } },
@@ -710,7 +713,7 @@ async function startVoice(request, env, id) {
       upstreamFailure = await realtimeFailureDiagnostic(response, {
         model: VOICE_MODEL, behaviorVersion: voiceBehaviorVersion, voice: 'marin',
         transcriptionModel: 'gpt-live-transcribe', turnDetection: 'semantic_vad',
-        tools: isNextFlow(behavior.version) ? toolsFor(behavior.version) : [],
+        tools: realtimeTools,
         instructionsPresent: Boolean(instructions), acceptedMealPresent: Boolean(session.meal_plan_json),
         transcriptPresent: Boolean(transcript), customerContextPresent: Boolean(session.customer_context),
         sdpPresent: Boolean(input.sdp),
