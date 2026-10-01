@@ -198,6 +198,14 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 - **Depends / reconsider:** Versioned fixed and held-out culinary comparisons across meal types, local and rendered staging regressions, owner cooking judgment, and the existing Stage 1B rollback and privacy gates. No commercial or production authority is granted.
 - **Supersedes:** None; this narrows the content quality target within SNDISH-020 while preserving its architecture and authority boundaries.
 
+### SNDISH-022 — Culinary judgment inside the complete cooking plan
+
+- **Date / owner:** 2026-10-01; Snap n Dish product owner, via the Final Cooking Voice Refinement brief.
+- **Decision:** Preserve the accepted structured meal package, Shopping, and Talk It bridge. Version a narrow change to the complete visual plan's culinary writing: keep measured, independently executable sections and final assembly, but place useful timing, sensory cues, and reasons in the action where they help. Avoid a routine separate chef/coordination note, mechanical field prose, filler, and cookbook verbosity. Keep discovery, equipment curiosity, one primary streamed culinary response, state authority, and voice configuration unchanged. The owner reports that the corrected Realtime microphone test worked well; treat that as owner evidence, not as a reason to change the voice architecture.
+- **Scope / proof:** Compare v2 and v3 across distinct meals plus discovery and recovery controls; run local and CI regressions, then verify the actual rendered plan on isolated Stage 1B staging for owner review. Production and Stage 1A remain unchanged. The active pre-change staging Worker is the immediate code rollback, with no data migration.
+- **Excluded alternative:** Recipe database, prose template, extra model call, critic, classifier, taxonomy, voice rewrite, or a fixed example recipe.
+- **Supersedes:** SNDISH-021 only where it suggests a separate chef's coordination note. All completeness, point-of-use quantity, safety, authority and release boundaries remain.
+
 ## Open decisions — no authority may be invented
 
 1. Stage 1A quality result and owner benchmark/human review; the current prototype tests are not that decision.

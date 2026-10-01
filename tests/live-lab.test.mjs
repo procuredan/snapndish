@@ -9,6 +9,7 @@ import { page } from '../live-lab/ui.mjs';
 import { MEAL_PACKAGE_TOOL, normalizeMealPlan } from '../live-lab/meal-plan.mjs';
 import { COOKING_PROGRESS_TOOL_V2 } from '../live-lab/cooking-progress.mjs';
 import { safeRealtimeMessage } from '../live-lab/realtime-diagnostics.mjs';
+import { instructionsForCookingContent, instructionsForCookingVoice } from '../src/config.ts';
 
 class TestDB {
   constructor() {
@@ -309,6 +310,58 @@ test('cooking-content v2 keeps the package authority path and voice bridge', asy
     const connected = await response.json();
     assert.equal(connected.behaviorVersion, 'stage1b-meal-package-v2+voice-bridge-v2');
     assert.match(connected.cookingSyncInstructions, /quantities at the point of use/i);
+  } finally { globalThis.fetch = original; }
+});
+
+test('cooking voice v3 changes only plan-writing guidance on the existing text and Realtime paths', async () => {
+  const v2 = instructionsForCookingContent('Two people. A skillet.');
+  const v3 = instructionsForCookingVoice('Two people. A skillet.');
+  assert.match(v2, /chef's coordination note/);
+  assert.doesNotMatch(v3, /end with a brief chef's coordination note/);
+  assert.match(v3, /Put timing and coordination where the cook needs them/);
+  assert.match(v3, /each quantity where it is used/);
+  assert.match(v3, /final assembly/);
+  assert.equal(v3.slice(0, v3.indexOf('Cooking-content refinement')),
+    v2.slice(0, v2.indexOf('Cooking-content refinement')), 'discovery and package behavior prefix is unchanged');
+
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-meal-package-v3';
+  const visitor = await createVisitorSession(e, 'Two people. A skillet.');
+  const original = globalThis.fetch;
+  let textCalls = 0;
+  globalThis.fetch = async (_url, init) => {
+    textCalls++;
+    const request = JSON.parse(init.body);
+    assert.match(request.instructions, /Put timing and coordination where the cook needs them/);
+    assert.deepEqual(request.tools.map(tool => tool.name), ['publish_meal_plan', 'update_cooking_progress']);
+    assert.deepEqual(request.tools.map(tool => tool.strict), [true, true]);
+    return providerStream('A few good dinner directions.');
+  };
+  try {
+    const turn = await worker.fetch(req(`/api/sessions/${visitor.id}/turns`, 'POST',
+      { text: 'Chicken thighs tonight.', turnId: crypto.randomUUID(), expectedRevision: 0 }, visitor.cookie), e, context());
+    assert.match(await turn.text(), /"type":"complete"/);
+    assert.equal(textCalls, 1);
+  } finally { globalThis.fetch = original; }
+
+  globalThis.fetch = async (_url, init) => {
+    const setup = JSON.parse(init.body.get('session'));
+    assert.match(setup.instructions, /Put timing and coordination where the cook needs them/);
+    assert.deepEqual(setup.tools.map(tool => tool.name), ['publish_meal_plan', 'update_cooking_progress']);
+    assert.ok(setup.tools.every(tool => !Object.hasOwn(tool, 'strict')));
+    assert.equal(setup.audio.output.voice, 'marin');
+    assert.equal(setup.model, 'gpt-realtime-2.1');
+    return new Response('v=0\r\nanswer', { status: 201 });
+  };
+  try {
+    const second = await createVisitorSession(e, 'Two people. A skillet.');
+    const response = await worker.fetch(req(`/api/sessions/${second.id}/voice/start`, 'POST',
+      { sdp: 'v=0\r\noffer', expectedRevision: 0 }, second.cookie), e, context());
+    assert.equal(response.status, 201);
+    const connected = await response.json();
+    assert.equal(connected.behaviorVersion, 'stage1b-meal-package-v3+voice-bridge-v2');
+    assert.match(connected.cookingSyncInstructions, /Put timing and coordination where the cook needs them/);
   } finally { globalThis.fetch = original; }
 });
 

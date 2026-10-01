@@ -1,4 +1,4 @@
-import { instructionsFor, instructionsForCandidate, instructionsForNextFlow, instructionsForCookingMode, instructionsForCookingModeV2, instructionsForMealPackage, instructionsForCookingContent, estimateUsd, BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, NEXT_FLOW_BEHAVIOR_VERSION, COOKING_BEHAVIOR_VERSION, COOKING_PLAN_BEHAVIOR_VERSION, MEAL_PACKAGE_BEHAVIOR_VERSION, COOKING_CONTENT_BEHAVIOR_VERSION, CONTEXT_VERSION, SCENARIO_VERSION } from '../src/config.ts';
+import { instructionsFor, instructionsForCandidate, instructionsForNextFlow, instructionsForCookingMode, instructionsForCookingModeV2, instructionsForMealPackage, instructionsForCookingContent, instructionsForCookingVoice, estimateUsd, BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, NEXT_FLOW_BEHAVIOR_VERSION, COOKING_BEHAVIOR_VERSION, COOKING_PLAN_BEHAVIOR_VERSION, MEAL_PACKAGE_BEHAVIOR_VERSION, COOKING_CONTENT_BEHAVIOR_VERSION, COOKING_VOICE_BEHAVIOR_VERSION, CONTEXT_VERSION, SCENARIO_VERSION } from '../src/config.ts';
 import { page } from './ui.mjs';
 import { stripJpegMetadata } from './jpeg.mjs';
 import { serviceWorker } from './push-sw.mjs';
@@ -14,7 +14,7 @@ const SESSION_COOKIE = '__Host-sndlab-session';
 const CUSTOMER_COOKIE = '__Host-sndlab-customer';
 const encoder = new TextEncoder();
 const isStage1b = env => env.STAGE1B_ENABLED === 'true';
-const isPackageVersion = version => version === MEAL_PACKAGE_BEHAVIOR_VERSION || version === COOKING_CONTENT_BEHAVIOR_VERSION;
+const isPackageVersion = version => [MEAL_PACKAGE_BEHAVIOR_VERSION, COOKING_CONTENT_BEHAVIOR_VERSION, COOKING_VOICE_BEHAVIOR_VERSION].includes(version);
 const isBridgeVersion = version => version === COOKING_PLAN_BEHAVIOR_VERSION || isPackageVersion(version);
 const isCookingVersion = version => version === COOKING_BEHAVIOR_VERSION || isBridgeVersion(version);
 const isNextFlow = version => version === NEXT_FLOW_BEHAVIOR_VERSION || isCookingVersion(version);
@@ -520,8 +520,9 @@ function firstUsefulProxy(text) {
 function behaviorFor(env, context, hasAcceptedMeal = false, cookingActive = false) {
   const version = env.BEHAVIOR_VERSION || BEHAVIOR_VERSION;
   if (isPackageVersion(version) && isStage1b(env) && (!env.ARM || env.ARM === 'C'))
-    return { version, instructions: (version === COOKING_CONTENT_BEHAVIOR_VERSION
-      ? instructionsForCookingContent : instructionsForMealPackage)(context, hasAcceptedMeal, cookingActive) };
+    return { version, instructions: (version === COOKING_VOICE_BEHAVIOR_VERSION ? instructionsForCookingVoice
+      : version === COOKING_CONTENT_BEHAVIOR_VERSION ? instructionsForCookingContent
+      : instructionsForMealPackage)(context, hasAcceptedMeal, cookingActive) };
   if (version === COOKING_PLAN_BEHAVIOR_VERSION && isStage1b(env) && (!env.ARM || env.ARM === 'C'))
     return { version, instructions: instructionsForCookingModeV2(context, hasAcceptedMeal, cookingActive) };
   if (version === COOKING_BEHAVIOR_VERSION && isStage1b(env) && (!env.ARM || env.ARM === 'C'))
@@ -732,7 +733,8 @@ async function startVoice(request, env, id) {
       behaviorVersion: voiceBehaviorVersion, connectMs,
       ...(isNextFlow(behavior.version) ? { syncInstructions: instructions } : {}),
       ...(isCookingVersion(behavior.version) ? { cookingSyncInstructions:
-        (behavior.version === COOKING_CONTENT_BEHAVIOR_VERSION ? instructionsForCookingContent :
+        (behavior.version === COOKING_VOICE_BEHAVIOR_VERSION ? instructionsForCookingVoice :
+          behavior.version === COOKING_CONTENT_BEHAVIOR_VERSION ? instructionsForCookingContent :
           isPackageVersion(behavior.version) ? instructionsForMealPackage :
           behavior.version === COOKING_PLAN_BEHAVIOR_VERSION ? instructionsForCookingModeV2 : instructionsForCookingMode)(contextText, true, true) +
         (transcript ? `\n\nConversation before this spoken session:\n${transcript}` : '') +
@@ -1213,7 +1215,7 @@ async function dispatchReturns(env) {
 
 async function streamTurn(request, env, ctx, id) {
   if (!env.OPENAI_API_KEY) return json({ error: 'MODEL_UNAVAILABLE' }, 503);
-  if (![BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, NEXT_FLOW_BEHAVIOR_VERSION, COOKING_BEHAVIOR_VERSION, COOKING_PLAN_BEHAVIOR_VERSION, MEAL_PACKAGE_BEHAVIOR_VERSION, COOKING_CONTENT_BEHAVIOR_VERSION].includes(env.BEHAVIOR_VERSION || BEHAVIOR_VERSION)
+  if (![BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, NEXT_FLOW_BEHAVIOR_VERSION, COOKING_BEHAVIOR_VERSION, COOKING_PLAN_BEHAVIOR_VERSION, MEAL_PACKAGE_BEHAVIOR_VERSION, COOKING_CONTENT_BEHAVIOR_VERSION, COOKING_VOICE_BEHAVIOR_VERSION].includes(env.BEHAVIOR_VERSION || BEHAVIOR_VERSION)
     || (env.BEHAVIOR_VERSION === CANDIDATE_BEHAVIOR_VERSION && env.ARM && env.ARM !== 'C')
     || (isNextFlow(env.BEHAVIOR_VERSION) && (!isStage1b(env) || (env.ARM && env.ARM !== 'C'))))
     return json({ error: 'INVALID_BEHAVIOR_CONFIGURATION' }, 503);

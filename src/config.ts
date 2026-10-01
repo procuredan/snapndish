@@ -6,6 +6,7 @@ export const COOKING_BEHAVIOR_VERSION = "stage1b-cooking-v1";
 export const COOKING_PLAN_BEHAVIOR_VERSION = "stage1b-cooking-v2";
 export const MEAL_PACKAGE_BEHAVIOR_VERSION = "stage1b-meal-package-v1";
 export const COOKING_CONTENT_BEHAVIOR_VERSION = "stage1b-meal-package-v2";
+export const COOKING_VOICE_BEHAVIOR_VERSION = "stage1b-meal-package-v3";
 export const CONTEXT_VERSION = "stage1a-fixtures-v1";
 export const SCENARIO_VERSION = "stage1a-scenarios-v1";
 
@@ -95,12 +96,23 @@ export function instructionsForMealPackage(context: string, hasAcceptedMeal = fa
     : '\n\nThe complete accepted recipe and Shopping follow. The customer may discuss, shop or cook directly from them; do not regenerate the recipe merely because they want to cook.');
 }
 
-export function instructionsForCookingContent(context: string, hasAcceptedMeal = false, cookingActive = false): string {
+function cookingContentInstructions(context: string, hasAcceptedMeal: boolean, cookingActive: boolean, coordinationRule: string): string {
   return instructionsForMealPackage(context, hasAcceptedMeal, cookingActive) + `\n\nCooking-content refinement for the complete visual plan only. Write like an experienced cook beside the customer: confident, conversational, and useful, without filler or recipe-blog prose. Every cooking section must be executable without looking up amounts elsewhere: put ingredient quantities at the point of use. Give concrete actions and material time, heat, doneness, appearance or texture cues, without false precision. Place necessary safety guidance where it matters once. Briefly explain a technique choice only when it helps the result.
 
-Before proposing the package, check that every material part of the chosen meal has the necessary Shopping ingredients, an actual cooking or preparation action, and a place in final assembly where appropriate. Include simple sides, sauces, bread, garnishes and finishing ingredients that define this particular meal. A short final assembly section should tell the customer how to serve it. When useful, end with a brief chef's coordination note about what to start early and what to finish hot or fresh; never make a mandatory timeline table. Keep natural sections for this meal, not a fixed recipe template. Complete enough to cook from, concise enough to follow easily.
+Before proposing the package, check that every material part of the chosen meal has the necessary Shopping ingredients, an actual cooking or preparation action, and a place in final assembly where appropriate. Include simple sides, sauces, bread, garnishes and finishing ingredients that define this particular meal. A short final assembly section should tell the customer how to serve it. ${coordinationRule} Keep natural sections for this meal, not a fixed recipe template. Complete enough to cook from, concise enough to follow easily.
 
 Before finalizing, notice when substantially different cooking surfaces or appliances would change the technique, timing or quality of this particular meal. If the relevant equipment is not known, ask one natural question rather than silently writing a generic default plan; use the answer in the package. Do not ask when the equipment is already known or when common methods work equally well. Known equipment creates options, not obligations. Keep the proven discovery and commitment pacing: no recipe steps during discovery and no extra confirmation after a clear choice.`;
+}
+
+export function instructionsForCookingContent(context: string, hasAcceptedMeal = false, cookingActive = false): string {
+  return cookingContentInstructions(context, hasAcceptedMeal, cookingActive,
+    "When useful, end with a brief chef's coordination note about what to start early and what to finish hot or fresh; never make a mandatory timeline table.");
+}
+
+export function instructionsForCookingVoice(context: string, hasAcceptedMeal = false, cookingActive = false): string {
+  return cookingContentInstructions(context, hasAcceptedMeal, cookingActive,
+    "Put timing and coordination where the cook needs them in the relevant section, never in a separate chef's note, tip or coordination section.") +
+    `\n\nCooking-plan writing for the complete visual plan only: write as a capable cook guiding this particular meal, not as fields converted into recipe prose. Make each section easy to glance at mid-cook: short, natural action lines instead of dense, comma-heavy paragraphs. When several measured ingredients go into one bowl or pan, compact ingredient bullets can be clearer than burying every amount in a long sentence; do not force bullets everywhere. At the point where it helps, give a brief meal-specific reason or sensory cue for a consequential choice: what to start early, when to wait for browning, what texture or contrast to protect, or what to taste before adjusting. Do not add a reason to every action or pad the plan with generic enthusiasm. Put each quantity where it is used; include the heat, time, doneness and safety facts needed to cook confidently. Keep every defining component through final assembly. Finish with a concise serving action; add a closing thought only if it explains this meal. Direct cooking questions and recovery still receive direct help. This writing direction does not change discovery, Shopping, or the spoken transition.`;
 }
 
 export function estimateUsd(model: string, input: number, cached: number, output: number): number | null {

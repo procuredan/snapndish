@@ -1,6 +1,6 @@
 // Synthetic culinary comparisons. Raw responses remain under ignored runs/.
 import fs from 'node:fs';
-import { instructionsFor, instructionsForMealPackage, instructionsForCookingContent, estimateUsd } from '../src/config.ts';
+import { instructionsFor, instructionsForMealPackage, instructionsForCookingContent, instructionsForCookingVoice, estimateUsd } from '../src/config.ts';
 import { MEAL_PACKAGE_TOOL, normalizeMealPlan } from '../live-lab/meal-plan.mjs';
 
 if (!process.env.OPENAI_API_KEY) throw Error('OPENAI_API_KEY is not configured');
@@ -27,6 +27,10 @@ const cases = [
     turns: [{ role: 'user', content: 'I have boneless chicken thighs.' },
       { role: 'assistant', content: 'Sticky soy-ginger chicken bowls with broccoli, sesame cucumber and jasmine rice are one direction.' },
       { role: 'user', content: 'The sticky soy-ginger chicken bowls with those sides sound great.' }] },
+  { id: 'chicken-lettuce-cups-held-out', kind: 'package', context: 'Four diners. Large skillet. No allergies.',
+    turns: [{ role: 'user', content: 'Ground chicken for dinner.' },
+      { role: 'assistant', content: 'Chicken lettuce cups with quick cucumber pickles and a savory ginger sauce would be fresh and satisfying.' },
+      { role: 'user', content: 'Those lettuce cups and pickles sound good. Make the whole meal.' }] },
   { id: 'brunch-taco-spread', kind: 'package', context: 'Six diners. Oven and griddle. No guest allergies or restrictions.',
     turns: [{ role: 'user', content: 'Family brunch this weekend.' },
       { role: 'assistant', content: 'A breakfast taco spread with eggs, black beans, roasted potatoes, pico, lime crema and tortillas would let everyone build their own.' },
@@ -48,14 +52,19 @@ const cases = [
     { role: 'assistant', content: 'Greek pitas, sticky chicken rice bowls, or smoky chicken tacos?' },
     { role: 'user', content: 'None of those. Something completely different.' }] },
   { id: 'direct-cooking-question-control', kind: 'direct', context: '', turns: ['My sauce split. How do I save it?'] },
+  { id: 'missing-ingredient-recovery-held-out', kind: 'direct', context: '',
+    turns: [{ role: 'user', content: 'I am making lemony chicken pasta.' },
+      { role: 'assistant', content: 'Start the sauce while the pasta water heats.' },
+      { role: 'user', content: "I just realized I don't have lemon. What should I do?" }] },
 ];
 const arms = [
   { id: 'foundation-a', instructions: c => instructionsFor('A', c), tools: [] },
   { id: 'package-v1', instructions: c => instructionsForMealPackage(c), tools: [MEAL_PACKAGE_TOOL] },
   { id: 'content-v2', instructions: c => instructionsForCookingContent(c), tools: [MEAL_PACKAGE_TOOL] },
+  { id: 'cooking-voice-v3', instructions: c => instructionsForCookingVoice(c), tools: [MEAL_PACKAGE_TOOL] },
 ];
 const chosenCases = new Set((process.env.CONTENT_EVAL_CASES || cases.map(c => c.id).join(',')).split(','));
-const chosenArms = new Set((process.env.CONTENT_EVAL_ARMS || 'content-v2,package-v1,foundation-a').split(','));
+const chosenArms = new Set((process.env.CONTENT_EVAL_ARMS || 'cooking-voice-v3,content-v2,foundation-a').split(','));
 const results = [];
 async function probe(c, arm) {
   const started = performance.now();
@@ -126,6 +135,6 @@ const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const file = `runs/cooking-content-${stamp}.private.json`;
 fs.writeFileSync(file, JSON.stringify({ at: new Date().toISOString(), model, effort,
   versions: { foundation: 'foundation-a-v1', package: 'stage1b-meal-package-v1',
-    candidate: 'stage1b-meal-package-v2' }, cases, results }, null, 2));
+    content: 'stage1b-meal-package-v2', candidate: 'stage1b-meal-package-v3' }, cases, results }, null, 2));
 process.stdout.write(JSON.stringify({ privateResultFile: file, cases: new Set(results.map(r => r.case)).size,
   calls: results.length }) + '\n');
