@@ -130,21 +130,24 @@ test('real browser shows accepted Shopping and complete recipe before optional N
     const plan={meal:'Lemon chicken with rice and cucumber salad',servings:2,
       sections:[{section:'Produce',items:[{id:'33333333-3333-4333-8333-333333333333',
         name:'Cucumber',quantity:'1',checked:false,have_status:'need'}]}],
-      full_plan:[{title:'Rice',directions:'Cook 1 cup rice until tender.'},
+      full_plan:[{title:'Rice',directions:'Measure 1 cup rice.\n\nCook until tender, then rest covered.'},
         {title:'Chicken and salad',directions:'Cook 1 lb chicken safely; slice cucumber and plate.'}],
       current_action:'Start the rice.'};
     session={id:'11111111-1111-4111-8111-111111111111',revision:1,turns:[],
       meal_plan:plan,meal_revision:1,shopping_revision:1,cooking_progress:null,cooking_revision:1};
     render();
     if(shopping.hidden||planDetails.hidden||!planDetails.open)throw Error('Shopping was not visible');
-    if(recipe.hidden||fullPlan.hidden||!fullPlan.textContent.includes('Cook 1 cup rice'))
+    if(recipe.hidden||fullPlan.hidden||!fullPlan.textContent.includes('Measure 1 cup rice.'))
       throw Error('complete recipe was not visible at package acceptance');
+    if(!fullPlan.querySelector('p')?.textContent.includes('\n\n')||
+      getComputedStyle(fullPlan.querySelector('p')).whiteSpace!=='pre-wrap')
+      throw Error('natural cooking paragraphs were not preserved');
     if(!nowPanel.hidden)throw Error('Now appeared before customer asked to focus cooking');
     session.cooking_progress={meal_revision:1,current_action:'Start the rice.',full_plan:plan.full_plan,
       remaining_components:['Rice','Chicken and salad'],reports:[]};
     session.cooking_revision=2;render();
     if(nowPanel.hidden||!nowText.textContent.includes('Start the rice'))throw Error('Now focus missing');
-    if(recipe.hidden||!fullPlan.textContent.includes('Cook 1 cup rice'))throw Error('recipe disappeared');
+    if(recipe.hidden||!fullPlan.textContent.includes('Measure 1 cup rice.'))throw Error('recipe disappeared');
     if(planDetails.hidden||shopping.hidden)throw Error('Shopping was unavailable after focus');
     document.body.dataset.regression='PASS';
   }catch(error){fail(error.stack||String(error))}

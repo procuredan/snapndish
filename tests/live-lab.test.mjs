@@ -6,10 +6,10 @@ import { Script } from 'node:vm';
 import worker from '../live-lab/worker.mjs';
 import closedStage1b from '../stage1b/closed.mjs';
 import { page } from '../live-lab/ui.mjs';
-import { MEAL_PACKAGE_TOOL, RETAIL_MEAL_PACKAGE_TOOL, normalizeMealPlan } from '../live-lab/meal-plan.mjs';
+import { MEAL_PACKAGE_TOOL, RETAIL_MEAL_PACKAGE_TOOL, COOKING_QUALITY_MEAL_PACKAGE_TOOL, normalizeMealPlan } from '../live-lab/meal-plan.mjs';
 import { COOKING_PROGRESS_TOOL_V2 } from '../live-lab/cooking-progress.mjs';
 import { safeRealtimeMessage } from '../live-lab/realtime-diagnostics.mjs';
-import { instructionsForCookingContent, instructionsForCookingVoice, instructionsForRetailShopping } from '../src/config.ts';
+import { instructionsForCookingContent, instructionsForCookingVoice, instructionsForRetailShopping, instructionsForCookingQuality } from '../src/config.ts';
 
 class TestDB {
   constructor() {
@@ -442,6 +442,73 @@ test('retail Shopping v4 accepts a revised complete package and keeps text/voice
       { sdp: 'v=0\r\noffer', expectedRevision: saved.revision }, visitor.cookie), e, context());
     assert.equal(response.status, 201);
     assert.equal((await response.json()).behaviorVersion, 'stage1b-meal-package-v4+voice-bridge-v2');
+  } finally { globalThis.fetch = original; }
+});
+
+test('cooking quality v5 replaces compression guidance while retaining retail acceptance and shared voice tools', async () => {
+  const contextText = 'Two diners. Rice cooker explicitly selected. No allergies.';
+  const v4 = instructionsForRetailShopping(contextText);
+  const v5 = instructionsForCookingQuality(contextText);
+  assert.equal(v5.slice(0, v5.indexOf('Stage 1B meal-package behavior')),
+    v4.slice(0, v4.indexOf('Stage 1B meal-package behavior')));
+  assert.doesNotMatch(v5, /short action lines|Complete does not mean verbose|Cooking-content refinement/);
+  assert.match(v5, /shorter is not the goal/i);
+  assert.match(v5, /retail_total must meet or slightly exceed/i);
+  assert.deepEqual(COOKING_QUALITY_MEAL_PACKAGE_TOOL.parameters.properties.sections,
+    RETAIL_MEAL_PACKAGE_TOOL.parameters.properties.sections);
+  assert.equal(COOKING_QUALITY_MEAL_PACKAGE_TOOL.strict, true);
+
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-meal-package-v5';
+  const visitor = await createVisitorSession(e, contextText);
+  const proposal = { meal: 'Ginger chicken with rice', servings: 2,
+    sections: [{ section: 'Meat', items: [{ name: 'Chicken thighs', quantity: '1 × 1-lb pack',
+      required_quantity: '12 oz', normalized_quantity: { amount: 12, unit: 'oz' },
+      retail_total: { amount: 16, unit: 'oz' }, have_status: 'need' }] }],
+    full_plan: [{ title: 'Rice', directions: 'Cook 3/4 cup jasmine rice in the selected rice cooker.' },
+      { title: 'Chicken and plate', directions: 'Brown 12 oz chicken until cooked through, then serve with the rice.' }],
+    current_action: 'Start the rice.' };
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    assert.equal(url, 'https://api.openai.com/v1/responses');
+    const request = JSON.parse(init.body);
+    assert.equal(request.max_output_tokens, 4096);
+    assert.equal(request.reasoning.effort, 'medium');
+    assert.deepEqual(request.tools[0], COOKING_QUALITY_MEAL_PACKAGE_TOOL);
+    assert.match(request.instructions, /selected equipment governs the method/i);
+    return providerStream('Ginger chicken and rice it is. I have the whole meal ready.',
+      [{ type: 'function_call', name: 'publish_meal_plan', arguments: JSON.stringify(proposal) }]);
+  };
+  let saved;
+  try {
+    const answer = await worker.fetch(req(`/api/sessions/${visitor.id}/turns`, 'POST',
+      { text: 'Ginger chicken and rice for two. Use my rice cooker.', turnId: crypto.randomUUID(),
+        expectedRevision: 0 }, visitor.cookie), e, context());
+    assert.match(await answer.text(), /"type":"complete"/);
+    saved = await (await worker.fetch(req(`/api/sessions/${visitor.id}`, 'GET', undefined,
+      visitor.cookie), e, context())).json();
+    assert.equal(saved.meal_plan.meal, proposal.meal);
+    assert.deepEqual(saved.meal_plan.full_plan, proposal.full_plan);
+    assert.equal(saved.meal_plan.sections[0].items[0].quantity, '1 × 1-lb pack');
+  } finally { globalThis.fetch = original; }
+
+  globalThis.fetch = async (url, init) => {
+    assert.equal(url, 'https://api.openai.com/v1/realtime/calls');
+    const setup = JSON.parse(init.body.get('session'));
+    assert.match(setup.instructions, /shorter is not the goal/i);
+    assert.deepEqual(setup.tools.map(tool => tool.name), ['publish_meal_plan', 'update_cooking_progress']);
+    assert.ok(setup.tools.every(tool => !Object.hasOwn(tool, 'strict')));
+    assert.deepEqual(setup.tools[0].parameters, COOKING_QUALITY_MEAL_PACKAGE_TOOL.parameters);
+    return new Response('v=0\r\nanswer', { status: 201 });
+  };
+  try {
+    const connected = await worker.fetch(req(`/api/sessions/${visitor.id}/voice/start`, 'POST',
+      { sdp: 'v=0\r\noffer', expectedRevision: saved.revision }, visitor.cookie), e, context());
+    assert.equal(connected.status, 201);
+    const body = await connected.json();
+    assert.equal(body.behaviorVersion, 'stage1b-meal-package-v5+voice-bridge-v2');
+    assert.match(body.cookingSyncInstructions, /shorter is not the goal/i);
   } finally { globalThis.fetch = original; }
 });
 

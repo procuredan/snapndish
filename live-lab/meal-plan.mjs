@@ -70,6 +70,12 @@ retailItem.properties.retail_total = { type: 'object', additionalProperties: fal
   properties: { amount: { type: 'number' }, unit: { type: 'string' } }, required: ['amount', 'unit'] };
 retailItem.required = ['name', 'quantity', 'required_quantity', 'normalized_quantity', 'retail_total', 'have_status'];
 
+// V5 changes only the cooking guidance sent with the retail tool. Shopping and
+// the accepted package shape stay identical to V4 for rollback and revisions.
+export const COOKING_QUALITY_MEAL_PACKAGE_TOOL = structuredClone(RETAIL_MEAL_PACKAGE_TOOL);
+COOKING_QUALITY_MEAL_PACKAGE_TOOL.parameters.properties.full_plan.description =
+  'The complete plan for this accepted meal in free-form culinary sections. Make consequential cooking decisions for its ingredients, scale, constraints and selected equipment. Explain useful timing, heat, texture, taste and dependencies where the cook needs them. Include quantities where measured or added, every material component, necessary safety guidance and final assembly. Use natural paragraphs or measured lists; shorter output is not the goal.';
+
 function normalizedAmount(value) {
   if (!value || typeof value !== 'object' || !Number.isFinite(value.amount) ||
     value.amount <= 0 || value.amount > 1_000_000 || typeof value.unit !== 'string' ||

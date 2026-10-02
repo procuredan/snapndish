@@ -214,6 +214,15 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 - **Scope / proof:** No separate model call, SKU database, inventory service, recipe engine, D1 migration, UI-flow change, culinary prompt rewrite or Talk It architecture change. Compare fixed and held-out small/family/large-group packages plus discovery and recovery controls; verify consolidation, safe rounding, point-of-use amounts, checklist revision, local/CI tests and a rendered isolated staging journey. Owner retail-quality judgment remains the broader promotion gate. Stage 1A and production remain unchanged.
 - **Supersedes:** None. SNDISH-020 through SNDISH-022 continue to govern meal acceptance and cooking voice; only the Shopping quantity representation is extended.
 
+### SNDISH-024 — Cooking Quality V5 on isolated Stage 1B staging
+
+- **Date / owner:** 2026-10-02; Snap n Dish product owner, approving Astra Ultra's cooking-experience diagnosis and Engineering GO.
+- **Decision:** Replace accumulated cooking-writing guidance for a separately versioned `stage1b-meal-package-v5` candidate with one coherent contract focused on practical culinary decisions, useful sequencing, sensory targets, point-of-use quantities and complete assembly. Shorter output is not the goal. Keep V1–V4 reproducible. Preserve Retail-aware Shopping V4, flexible `{title,directions}` plan state, primary model and generation path, validator, text/voice bridge, discovery and application authority. The V5 tool changes only its cooking-plan description; no migration is authorized.
+- **Reason:** Owner testing found technically competent V4 instructions still read like a recipe card. Inspection found stacked concision guidance and no matched foundation comparison of complete cooking plans. The schema and renderer do not themselves force this outcome; causal quality improvement requires a controlled V4/V5/foundation comparison and real owner cooking judgment.
+- **Scope / proof:** Use fixed and held-out matched meal cases, preserve discovery/recovery controls, measure latency/usage/cost and completion, run local/CI tests, then verify actual rendered and spoken journeys only on isolated Stage 1B staging. A small blind comparison supports a fresh unscripted owner meal test. Confirm V4 staging code rollback and D1 recovery before release.
+- **Excluded alternative:** Recipe database, taxonomy, second planner/critic, retail redesign, output-limit change without evidence, commercial memory, production or Stage 1A modification.
+- **Supersedes:** SNDISH-021 and SNDISH-022 only where their accumulated cooking-writing brevity instructions conflict with this V5 quality target. Their safety, component completeness, point-of-use measurement, authority and release safeguards remain.
+
 ## Open decisions — no authority may be invented
 
 1. Stage 1A quality result and owner benchmark/human review; the current prototype tests are not that decision.
