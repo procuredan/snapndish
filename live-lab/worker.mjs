@@ -709,7 +709,8 @@ async function startVoice(request, env, id) {
        ...(isNextFlow(behavior.version) ? { tools: realtimeTools,
          tool_choice: behavior.version === COOKING_BEHAVIOR_VERSION && session.cooking_progress_json ? 'required' : 'auto' } : {}),
        audio: {
-        input: { transcription: { model: 'gpt-live-transcribe' }, turn_detection: { type: 'semantic_vad' } },
+        input: { transcription: { model: 'gpt-live-transcribe' },
+          turn_detection: { type: 'semantic_vad', interrupt_response: false, create_response: false } },
         output: { voice: 'marin' },
       } }));
     const safetyId = await mac(env.COOKIE_SIGNING_KEY, session.customer_id || id);

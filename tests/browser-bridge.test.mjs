@@ -11,6 +11,93 @@ const candidates = [process.env.CHROME_PATH,
   '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable'].filter(Boolean);
 const chrome = candidates.find(candidate => fs.existsSync(candidate));
 
+test('real browser keeps Talk It open on empty sound and routes genuine interruptions after accepted speech',
+  { skip: !process.env.SNAP_BROWSER_TEST && 'Set SNAP_BROWSER_TEST=1 to run Chrome' }, () => {
+    assert.ok(chrome, 'Chrome is required for the browser regression');
+    const fixture = String.raw`
+<script>
+(async()=>{
+  try{
+    const id='11111111-1111-4111-8111-111111111111';
+    const base={id,revision:1,turns:[],meal_plan:null,meal_revision:0,shopping_revision:0,
+      cooking_progress:null,cooking_revision:0,active_voice_id:'44444444-4444-4444-8444-444444444444'};
+    session=structuredClone(base);
+    const sent=[],posted=[];
+    window.fetch=async(url,options)=>{
+      if(url.endsWith('/voice/events')){
+        const data=JSON.parse(options.body);posted.push(data);
+        return new Response(JSON.stringify({status:'accepted',revision:posted.length,turnId:'turn-'+posted.length}),
+          {status:200});
+      }
+      if(url.endsWith('/api/sessions/'+id))return new Response(JSON.stringify({...base,revision:posted.length+1}),
+        {status:200});
+      throw Error('unexpected fetch '+url);
+    };
+    const v={id:base.active_voice_id,sessionId:id,generation,work:Promise.resolve(),
+      behaviorVersion:'stage1b-meal-package-v4+voice-bridge-v2',
+      dc:{readyState:'open',send:value=>sent.push(JSON.parse(value))},
+      userOrder:['earlier'],transcripts:new Map([['earlier','What else could I make?']]),
+      acceptedUsers:new Map([['earlier',{turnId:'turn-earlier'}]]),
+      responses:[],responseTexts:new Map(),firstUseful:new Map(),repairAttempts:new Map(),
+      pendingTool:null,toolPending:false,speechStopped:performance.now(),syncFailed:false};
+    voice=v;
+    voiceEvent(v,{type:'response.created',response:{id:'original'}});
+    for(const sound of ['cough','throat','pan']){
+      const item='noise-'+sound;
+      voiceEvent(v,{type:'input_audio_buffer.speech_started'});
+      voiceEvent(v,{type:'input_audio_buffer.speech_stopped'});
+      voiceEvent(v,{type:'input_audio_buffer.committed',item_id:item});
+      voiceEvent(v,{type:'conversation.item.input_audio_transcription.completed',item_id:item,transcript:'  '});
+      if(voice!==v||v.syncFailed||v.userOrder.includes(item))throw Error(sound+' ended or blocked Talk It');
+    }
+    if(sent.some(e=>e.type==='response.cancel'||e.type==='response.create'))
+      throw Error('incidental sound interrupted the response');
+    voiceEvent(v,{type:'conversation.item.input_audio_transcription.failed',item_id:'noise-failed'});
+    if(voice!==v||v.syncFailed)throw Error('failed transcription ended Talk It');
+    const user=async(item,text)=>{
+      voiceEvent(v,{type:'input_audio_buffer.committed',item_id:item});
+      voiceEvent(v,{type:'conversation.item.input_audio_transcription.completed',item_id:item,transcript:text});
+      await v.work;
+    };
+    await user('wait','Wait.');
+    if(!sent.some(e=>e.type==='response.cancel')||!sent.some(e=>e.type==='output_audio_buffer.clear'))
+      throw Error('one-word interruption did not stop prior reply');
+    if(sent.some(e=>e.type==='response.create'))throw Error('new reply started before cancellation settled');
+    voiceEvent(v,{type:'response.done',response:{id:'original',status:'cancelled',output:[]}});
+    if(v.userOrder.includes('earlier')||!sent.some(e=>e.type==='response.create'))
+      throw Error('cancelled reply blocked the real customer turn');
+    voiceEvent(v,{type:'response.created',response:{id:'reply-wait'}});
+    voiceEvent(v,{type:'response.done',response:{id:'reply-wait',status:'completed',
+      output:[{type:'message',content:[{transcript:'Sure, I’m listening.'}]}]}});
+    await v.work;
+    await user('sentence','Can I use the Blackstone instead?');
+    if(sent.filter(e=>e.type==='response.create').length!==2)throw Error('second turn did not request a reply');
+    voiceEvent(v,{type:'response.created',response:{id:'reply-sentence'}});
+    voiceEvent(v,{type:'response.done',response:{id:'reply-sentence',status:'completed',
+      output:[{type:'message',content:[{transcript:'Yes, the Blackstone will work.'}]}]}});
+    await v.work;
+    if(voice!==v||v.userOrder.length||posted.filter(p=>p.type==='user').length!==2||
+      posted.filter(p=>p.type==='assistant').length!==2)
+      throw Error('multi-turn transcript did not stay healthy');
+    document.body.dataset.regression='PASS';
+  }catch(error){document.body.dataset.regression='FAIL: '+(error.stack||String(error))}
+})();
+</script>`;
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'snapndish-voice-interrupt-'));
+    try {
+      const file = path.join(directory, 'voice.html');
+      fs.writeFileSync(file, page('chat', 'browser-test', true, true).replace('</body>', fixture + '</body>'));
+      let output;
+      try { output = execFileSync(chrome, ['--headless=new', '--no-first-run', '--no-default-browser-check',
+        '--disable-gpu', '--disable-background-networking', '--virtual-time-budget=6000',
+        `--user-data-dir=${path.join(directory, 'chrome-profile')}`, '--dump-dom', `file://${file}`],
+      { encoding: 'utf8', timeout: 35_000, stdio: ['ignore', 'pipe', 'ignore'] }); }
+      catch (error) { output = error.stdout || error.output?.[1] || ''; }
+      assert.match(output, /data-regression="PASS"/,
+        output.match(/data-regression="[^"]*/)?.[0] || output.slice(-600));
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
 test('real browser executes voice state sync, tool-result ordering and accepted Shopping/Now rendering',
   { skip: !process.env.SNAP_BROWSER_TEST && 'Set SNAP_BROWSER_TEST=1 to run Chrome' }, () => {
     assert.ok(chrome, 'Chrome is required for the browser regression');

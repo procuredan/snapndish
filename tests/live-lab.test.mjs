@@ -996,6 +996,8 @@ test('Stage 1B spoken transcript uses the same context, stores usage, and reject
     assert.match(setup.instructions, /next decision or action/);
     assert.match(setup.instructions, /bold flavors/);
     assert.equal(setup.audio.input.transcription.model, 'gpt-live-transcribe');
+    assert.deepEqual(setup.audio.input.turn_detection,
+      { type: 'semantic_vad', interrupt_response: false, create_response: false });
     return new Response('v=0\r\nanswer', { status: 201, headers: { Location: '/v1/realtime/calls/rtc_test' } });
   };
   let voiceId;
