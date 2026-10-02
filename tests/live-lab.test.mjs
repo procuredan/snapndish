@@ -620,7 +620,8 @@ test('V5.1 repair receives the exact rejection field and accepts one current cor
 });
 
 test('V5.1 bounded repair failure keeps the last accepted package and available usage', async () => {
-  for (const variant of ['http', 'bad_json', 'exhausted', 'incomplete', 'invalid', 'empty', 'malformed']) {
+  for (const variant of ['http', 'bad_json', 'exhausted', 'incomplete', 'invalid',
+    'invalid_with_success_text', 'empty', 'malformed']) {
     const e = env();
     e.STAGE1B_ENABLED = 'true';
     e.BEHAVIOR_VERSION = 'stage1b-meal-package-v5.1';
@@ -645,8 +646,10 @@ test('V5.1 bounded repair failure keeps the last accepted package and available 
         incomplete_details: { reason: 'max_output_tokens' }, usage: { input_tokens: 50, output_tokens: 20 } }
         : variant === 'incomplete' ? { status: 'incomplete',
           incomplete_details: { reason: 'other-private-reason' }, usage: { input_tokens: 50, output_tokens: 20 } }
-        : variant === 'invalid' ? { status: 'completed', output: [{ type: 'function_call',
-          name: 'publish_meal_plan', arguments: JSON.stringify(invalid) }],
+        : ['invalid', 'invalid_with_success_text'].includes(variant) ? { status: 'completed',
+          output: [{ type: 'function_call', name: 'publish_meal_plan', arguments: JSON.stringify(invalid) },
+            ...(variant === 'invalid_with_success_text'
+              ? [{ type: 'message', content: [{ type: 'output_text', text: 'The new meal was saved.' }] }] : [])],
           usage: { input_tokens: 50, output_tokens: 20 } }
         : variant === 'malformed' ? { status: 'completed', output: 'private content',
           usage: { input_tokens: 50, output_tokens: 20 } }
@@ -672,8 +675,33 @@ test('V5.1 bounded repair failure keeps the last accepted package and available 
         'BRIDGE_RECOVERY_INCOMPLETE_MAX_OUTPUT_TOKENS');
       const diagnostic = e.DB.raw.prepare("SELECT details_json FROM state_events WHERE kind='bridge_diagnostic'").get().details_json;
       assert.doesNotMatch(diagnostic, /private content|private-reason|A{30}/);
+      if (variant === 'invalid_with_success_text') {
+        assert.equal(call.error_code, 'BRIDGE_RECOVERY_INVALID_PROPOSAL');
+        assert.equal(saved.turns.some(turn => turn.text === 'The new meal was saved.'), false);
+      }
     } finally { globalThis.fetch = original; }
   }
+});
+
+test('V5.1 primary provider HTTP failure records only bounded diagnostic metadata', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-meal-package-v5.1';
+  const visitor = await createVisitorSession(e, 'Two people.');
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => new Response('private provider body sk-proj-secret',
+    { status: 400, headers: { 'x-request-id': 'req_primary400' } });
+  try {
+    const answer = await worker.fetch(req(`/api/sessions/${visitor.id}/turns`, 'POST',
+      { text: 'What should we make?', turnId: crypto.randomUUID(), expectedRevision: 0 },
+      visitor.cookie), e, context());
+    assert.match(await answer.text(), /"type":"error"/);
+    const event = e.DB.raw.prepare("SELECT details_json FROM state_events WHERE kind='bridge_diagnostic'").get();
+    const diagnostic = JSON.parse(event.details_json);
+    assert.equal(diagnostic.attempts[0].http_status, 400);
+    assert.equal(diagnostic.attempts[0].request_id, 'req_primary400');
+    assert.doesNotMatch(event.details_json, /private provider body|sk-proj-secret/);
+  } finally { globalThis.fetch = original; }
 });
 
 test('V5.1 two-to-four revision keeps explicit Shopping edits and reported progress', async () => {

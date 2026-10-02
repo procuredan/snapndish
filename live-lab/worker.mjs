@@ -1286,6 +1286,12 @@ async function streamTurn(request, env, ctx, id) {
         let bridgeContinuationCount = 0, bridgeRejectedReason = null, bridgeRejectedCalls = [];
         const v51 = behavior.version === COOKING_QUALITY_V51_BEHAVIOR_VERSION;
         const bridgeDiagnostics = [];
+        const diagnosticCost = response => {
+          const usage = response?.usage;
+          return Number.isInteger(usage?.input_tokens) && Number.isInteger(usage?.output_tokens)
+            ? estimateUsd(response.model ?? model, usage.input_tokens,
+              usage.input_tokens_details?.cached_tokens ?? 0, usage.output_tokens) : null;
+        };
         try {
           sendSse(controller, { type: 'accepted', turnId, revision });
           let provider;
@@ -1299,6 +1305,9 @@ async function streamTurn(request, env, ctx, id) {
                  max_output_tokens: 4096, store: false, stream: true }),
             });
             if (provider.ok) break;
+            if (v51) bridgeDiagnostics.push(boundedBridgeDiagnostic({ stage: 'primary',
+              requestId: provider.headers.get('x-request-id'), httpStatus: provider.status,
+              outcome: 'http_error', durationMs: Math.round(performance.now() - started) }));
             if (![429, 500, 502, 503, 504].includes(provider.status) || attempt === 2)
               throw new Error(`HTTP_${provider.status}`);
             retryCount++;
@@ -1343,7 +1352,8 @@ async function streamTurn(request, env, ctx, id) {
            if (!completed) {
              if (v51) bridgeDiagnostics.push(boundedBridgeDiagnostic({ stage: 'primary',
                response: incompleteResponse, requestId: primaryRequestId, outcome: 'incomplete',
-               durationMs: Math.round(performance.now() - started) }));
+               durationMs: Math.round(performance.now() - started),
+               estimatedUsd: diagnosticCost(incompleteResponse) }));
              throw new Error(incompleteReason === 'max_output_tokens'
                ? 'INCOMPLETE_MAX_OUTPUT_TOKENS' : 'INCOMPLETE_STREAM');
            }
@@ -1361,7 +1371,8 @@ async function streamTurn(request, env, ctx, id) {
            if (v51) bridgeDiagnostics.push(boundedBridgeDiagnostic({ stage: 'primary', response: completed,
              requestId: primaryRequestId,
              validation: proposed.validation, outcome: proposed.reason || cookingProposal.reason ? 'rejected' : null,
-             durationMs: Math.round(performance.now() - started) }));
+             durationMs: Math.round(performance.now() - started),
+             estimatedUsd: diagnosticCost(completed) }));
            if (isBridgeVersion(behavior.version) &&
              ((proposed.reason && proposed.calls.length === 1) ||
                (cookingProposal.reason && cookingProposal.calls.length === 1))) {
@@ -1417,13 +1428,15 @@ async function streamTurn(request, env, ctx, id) {
                (repaired.status === 'completed' && !Array.isArray(repaired.output)))) {
                bridgeDiagnostics.push(boundedBridgeDiagnostic({ stage: 'repair', response: repaired,
                  requestId: recovery.headers.get('x-request-id'), outcome: 'rejected',
-                 durationMs: Math.round(performance.now() - repairStarted) }));
+                 durationMs: Math.round(performance.now() - repairStarted),
+                 estimatedUsd: diagnosticCost(repaired) }));
                throw new Error('BRIDGE_RECOVERY_MALFORMED_RESPONSE');
              }
              if (v51 && repaired.status !== 'completed') {
                bridgeDiagnostics.push(boundedBridgeDiagnostic({ stage: 'repair', response: repaired,
                  requestId: recovery.headers.get('x-request-id'),
-                 outcome: 'incomplete', durationMs: Math.round(performance.now() - repairStarted) }));
+                 outcome: 'incomplete', durationMs: Math.round(performance.now() - repairStarted),
+                 estimatedUsd: diagnosticCost(repaired) }));
                throw new Error(repaired.incomplete_details?.reason === 'max_output_tokens'
                  ? 'BRIDGE_RECOVERY_INCOMPLETE_MAX_OUTPUT_TOKENS' : 'BRIDGE_RECOVERY_INCOMPLETE');
              }
@@ -1441,7 +1454,10 @@ async function streamTurn(request, env, ctx, id) {
                validation: proposed.validation,
                outcome: proposed.reason || cookingProposal.reason ? 'rejected'
                  : proposed.plan || cookingProposal.cooking || recoveryText ? 'accepted' : 'no_usable_output',
-               durationMs: Math.round(performance.now() - repairStarted) }));
+               durationMs: Math.round(performance.now() - repairStarted),
+               estimatedUsd: diagnosticCost(repaired) }));
+             if (v51 && (proposed.reason || cookingProposal.reason))
+               throw new Error('BRIDGE_RECOVERY_INVALID_PROPOSAL');
              if (!proposed.plan && !cookingProposal.cooking && !recoveryText)
                throw new Error(v51 && (proposed.reason || cookingProposal.reason)
                  ? 'BRIDGE_RECOVERY_INVALID_PROPOSAL'

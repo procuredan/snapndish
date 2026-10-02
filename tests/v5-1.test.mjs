@@ -69,15 +69,21 @@ test('bridge diagnostics allow only bounded metadata', () => {
   const hostile = boundedBridgeDiagnostic({ stage: 'repair', requestId: 'req_good',
     response: { id: 'resp_good', status: 'incomplete',
       incomplete_details: { reason: 'max_output_tokens', private: 'private-meal' },
+      usage: { input_tokens: 80, output_tokens: 20, input_tokens_details: { cached_tokens: 8 },
+        private: 'private-usage' },
       output: [{ type: 'function_call', name: 'publish_meal_plan',
         arguments: 'sk-proj-secret customer meal' }], authorization: 'Bearer secret' },
     validation: { code: 'PLAN_DIRECTIONS_LENGTH', field: 'full_plan[2].directions',
       actual: 1494, max: 1400, private: 'customer meal' },
-    durationMs: 85, outcome: 'incomplete' });
+    durationMs: 85, outcome: 'incomplete', estimatedUsd: 0.0123 });
   assert.deepEqual(hostile.validation, { code: 'PLAN_DIRECTIONS_LENGTH',
     field: 'full_plan[2].directions', actual: 1494, max: 1400 });
   assert.equal(hostile.request_id, 'req_good');
   assert.equal(hostile.incomplete_reason, 'max_output_tokens');
+  assert.equal(hostile.input_tokens, 80);
+  assert.equal(hostile.output_tokens, 20);
+  assert.equal(hostile.cached_input_tokens, 8);
+  assert.equal(hostile.estimated_usd, 0.0123);
   assert.doesNotMatch(JSON.stringify(hostile), /secret|private-meal|customer meal|Bearer/);
   const bad = boundedBridgeDiagnostic({ stage: 'anything', requestId: 'req_good\nAuthorization',
     validation: { code: 'FREEFORM', field: 'private[0]', actual: 'secret', max: 1 } });

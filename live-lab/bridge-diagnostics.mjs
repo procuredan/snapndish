@@ -11,7 +11,7 @@ function count(value) {
 }
 
 export function boundedBridgeDiagnostic({ stage, response, requestId, httpStatus, validation, durationMs,
-  outcome } = {}) {
+  outcome, estimatedUsd } = {}) {
   const status = STATUSES.has(response?.status) ? response.status : 'unknown';
   const output = Array.isArray(response?.output) ? response.output.slice(0, 12) : [];
   const field = validation?.field;
@@ -31,6 +31,11 @@ export function boundedBridgeDiagnostic({ stage, response, requestId, httpStatus
       ...(TOOL_NAMES.has(item?.name) ? { tool: item.name } : {}) })),
     http_status: Number.isInteger(httpStatus) && httpStatus >= 400 && httpStatus <= 599 ? httpStatus : null,
     duration_ms: count(durationMs),
+    input_tokens: count(response?.usage?.input_tokens),
+    output_tokens: count(response?.usage?.output_tokens),
+    cached_input_tokens: count(response?.usage?.input_tokens_details?.cached_tokens),
+    estimated_usd: Number.isFinite(estimatedUsd) && estimatedUsd >= 0 && estimatedUsd <= 100
+      ? estimatedUsd : null,
     outcome: ['accepted', 'rejected', 'http_error', 'bad_json', 'incomplete', 'no_usable_output']
       .includes(outcome) ? outcome : null,
     validation: VALIDATION_CODES.has(validation?.code) && safeField &&
