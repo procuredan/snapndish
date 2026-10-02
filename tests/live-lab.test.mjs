@@ -619,6 +619,44 @@ test('V5.1 repair receives the exact rejection field and accepts one current cor
   } finally { globalThis.fetch = original; }
 });
 
+test('V5.1 single repair receives numeric retail mismatch without changing the V4 validator', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-meal-package-v5.1';
+  const visitor = await createVisitorSession(e, 'A family meal.');
+  const corrected = JSON.parse(fs.readFileSync(new URL('./fixtures/v5-1-serving-revision.json', import.meta.url)));
+  corrected.sections[0].items[0] = { name: 'Potatoes', quantity: '1 × 6-lb bag',
+    required_quantity: '6 lb', normalized_quantity: { amount: 6, unit: 'lb' },
+    retail_total: { amount: 6, unit: 'lb' }, have_status: 'need' };
+  const invalid = structuredClone(corrected);
+  invalid.sections[0].items[0].quantity = '1 × 5-lb bag plus 1 lb loose';
+  const original = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (_url, init) => {
+    const input = JSON.parse(init.body);
+    if (calls++ === 0) return providerStream('', [{ type: 'function_call', call_id: 'retail_bad',
+      name: 'publish_meal_plan', arguments: JSON.stringify(invalid) }]);
+    assert.deepEqual(JSON.parse(input.input.find(x => x.type === 'function_call_output').output),
+      { accepted: false, reason: 'INVALID_PLAN_PROPOSAL', validation: {
+        code: 'RETAIL_DISPLAY_TOTAL_MISMATCH', field: 'sections[0].items[0].quantity',
+        actual: 5, expected: 6 } });
+    return new Response(JSON.stringify({ id: 'resp_retail_repaired', model: 'gpt-6-astra',
+      status: 'completed', output: [{ type: 'function_call', name: 'publish_meal_plan',
+        arguments: JSON.stringify(corrected) }], usage: { input_tokens: 40, output_tokens: 30 } }),
+    { status: 200 });
+  };
+  try {
+    const answer = await worker.fetch(req(`/api/sessions/${visitor.id}/turns`, 'POST',
+      { text: 'Make this whole meal for four.', turnId: crypto.randomUUID(), expectedRevision: 0 },
+      visitor.cookie), e, context());
+    assert.match(await answer.text(), /"type":"complete"/);
+    const saved = await (await worker.fetch(req(`/api/sessions/${visitor.id}`, 'GET', undefined,
+      visitor.cookie), e, context())).json();
+    assert.equal(saved.meal_plan.sections[0].items[0].quantity, '1 × 6-lb bag');
+    assert.equal(calls, 2);
+  } finally { globalThis.fetch = original; }
+});
+
 test('V5.1 bounded repair failure keeps the last accepted package and available usage', async () => {
   for (const variant of ['http', 'bad_json', 'exhausted', 'incomplete', 'invalid',
     'invalid_with_success_text', 'empty', 'malformed']) {

@@ -4,10 +4,15 @@ const STATUSES = new Set(['completed', 'incomplete', 'failed', 'unknown']);
 const OUTPUT_TYPES = new Set(['message', 'function_call', 'reasoning']);
 const TOOL_NAMES = new Set(['publish_meal_plan', 'update_cooking_progress']);
 const VALIDATION_CODES = new Set(['PLAN_SECTION_COUNT', 'PLAN_TITLE_LENGTH',
-  'PLAN_DIRECTIONS_LENGTH', 'PLAN_TOTAL_LENGTH', 'CURRENT_ACTION_LENGTH']);
+  'PLAN_DIRECTIONS_LENGTH', 'PLAN_TOTAL_LENGTH', 'CURRENT_ACTION_LENGTH',
+  'RETAIL_DISPLAY_TOTAL_MISMATCH']);
 
 function count(value) {
   return Number.isInteger(value) && value >= 0 && value <= 1_000_000 ? value : null;
+}
+
+function amount(value) {
+  return Number.isFinite(value) && value > 0 && value <= 1_000_000 ? value : null;
 }
 
 export function boundedBridgeDiagnostic({ stage, response, requestId, httpStatus, validation, durationMs,
@@ -17,7 +22,9 @@ export function boundedBridgeDiagnostic({ stage, response, requestId, httpStatus
   const field = validation?.field;
   const safeField = typeof field === 'string' &&
     (/^full_plan\[\d{1,2}\]\.(?:directions|title)$/.test(field) ||
+      /^sections\[\d{1,2}\]\.items\[\d{1,2}\]\.quantity$/.test(field) ||
       ['full_plan', 'current_action'].includes(field)) ? field : null;
+  const retailMismatch = validation?.code === 'RETAIL_DISPLAY_TOTAL_MISMATCH';
   return {
     stage: STAGES.has(stage) ? stage : 'primary',
     status,
@@ -39,7 +46,10 @@ export function boundedBridgeDiagnostic({ stage, response, requestId, httpStatus
     outcome: ['accepted', 'rejected', 'http_error', 'bad_json', 'incomplete', 'no_usable_output']
       .includes(outcome) ? outcome : null,
     validation: VALIDATION_CODES.has(validation?.code) && safeField &&
-      count(validation?.actual) !== null && count(validation?.max) !== null
-      ? { code: validation.code, field: safeField, actual: validation.actual, max: validation.max } : null,
+      (retailMismatch ? /^sections\[/.test(safeField) && amount(validation?.actual) !== null &&
+        amount(validation?.expected) !== null : count(validation?.actual) !== null &&
+        count(validation?.max) !== null)
+      ? { code: validation.code, field: safeField, actual: validation.actual,
+        ...(retailMismatch ? { expected: validation.expected } : { max: validation.max }) } : null,
   };
 }

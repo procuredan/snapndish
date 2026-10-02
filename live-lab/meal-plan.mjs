@@ -140,7 +140,7 @@ function checkedNormalizedQuantity(required, normalized) {
   if (Math.abs(expected - normalized.amount) / expected <= .02) return normalized;
   return { ...normalized, amount: Math.round(expected * 1000) / 1000 };
 }
-function retailDisplayMatchesTotal(display, total) {
+function retailDisplayMatchesTotal(display, total, mismatch = null) {
   const packages = display.trim().match(/^(\d+(?:\.\d+)?)\s*[×x]\s*(\d+(?:\.\d+)?)\s*[- ]\s*(fl\.?\s*oz|oz|lbs?|g|kg|ml|l|pints?|quarts?)\b/i);
   if (packages) {
     const source = MEASURES[packages[3].toLowerCase().replace(/\./g, '').replace(/\s+/g, ' ')];
@@ -148,12 +148,19 @@ function retailDisplayMatchesTotal(display, total) {
     if (source && target && source[0] === target[0]) {
       const displayed = Number(packages[1]) * Number(packages[2]) * source[1];
       const recorded = total.amount * target[1];
-      return Math.abs(displayed - recorded) / displayed <= .05;
+      const matches = Math.abs(displayed - recorded) / displayed <= .05;
+      if (!matches && mismatch) Object.assign(mismatch,
+        { actual: Math.round(displayed / target[1] * 1000) / 1000, expected: total.amount });
+      return matches;
     }
   }
   const dozen = display.trim().match(/^(\d+(?:\.\d+)?)\s+dozen\b/i);
-  if (dozen && /^(?:count|each|eggs?)$/.test(total.unit))
-    return Math.abs(Number(dozen[1]) * 12 - total.amount) < .01;
+  if (dozen && /^(?:count|each|eggs?)$/.test(total.unit)) {
+    const displayed = Number(dozen[1]) * 12;
+    const matches = Math.abs(displayed - total.amount) < .01;
+    if (!matches && mismatch) Object.assign(mismatch, { actual: displayed, expected: total.amount });
+    return matches;
+  }
   return true;
 }
 
@@ -181,12 +188,12 @@ export function normalizeMealPlan(raw, { requireFullPlan = false, requireRetail 
   const sections = [];
   let count = 0;
   const retailNames = new Set();
-  for (const section of value.sections) {
+  for (const [sectionIndex, section] of value.sections.entries()) {
     if (typeof section?.section !== 'string' || !section.section.trim() ||
       section.section.length > 80 || !Array.isArray(section.items) ||
       section.items.length < 1 || section.items.length > 30) return null;
     const items = [];
-    for (const item of section.items) {
+    for (const [itemIndex, item] of section.items.entries()) {
       if (typeof item?.name !== 'string' || !item.name.trim() || item.name.length > 120 ||
         typeof item.quantity !== 'string' || !item.quantity.trim() || item.quantity.length > 120 ||
         !['confirmed', 'assumed', 'need'].includes(item.have_status)) return null;
@@ -199,8 +206,18 @@ export function normalizeMealPlan(raw, { requireFullPlan = false, requireRetail 
       const nameKey = item.name.trim().toLocaleLowerCase();
       if (requireRetail && (typeof item.required_quantity !== 'string' || !required || required.length > 120 ||
         !normalized || !retailTotal || normalized.unit !== retailTotal.unit ||
-        retailTotal.amount < normalized.amount || !retailDisplayMatchesTotal(item.quantity, retailTotal) ||
+        retailTotal.amount < normalized.amount ||
         retailNames.has(nameKey))) return null;
+      if (requireRetail) {
+        const mismatch = {};
+        if (!retailDisplayMatchesTotal(item.quantity, retailTotal, mismatch)) {
+          if (validation && Number.isFinite(mismatch.actual) && Number.isFinite(mismatch.expected))
+            Object.assign(validation, { code: 'RETAIL_DISPLAY_TOTAL_MISMATCH',
+              field: `sections[${sectionIndex}].items[${itemIndex}].quantity`,
+              actual: mismatch.actual, expected: mismatch.expected });
+          return null;
+        }
+      }
       if (requireRetail) retailNames.add(nameKey);
       count++;
       if (count > 100) return null;

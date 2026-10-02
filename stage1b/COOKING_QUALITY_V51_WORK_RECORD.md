@@ -6,7 +6,7 @@
 
 V5 source `46e2ecdc7532d546affcfdf7e4d66204bd7860a9` retains one primary streamed culinary response, one optional same-model repair, and D1-owned conditional meal-package acceptance. Retail Shopping and its checklist edits are part of that package. The isolated V5 staging Worker failed on serving revision and was rolled back to recorded V4 Worker `61f1eee7-87ee-49e0-b183-71ac7d7e7b6f`; reverify the active and rollback-eligible version before release.
 
-V5.1 reuses the exact V5 culinary instructions and fields. Only its versioned tool descriptions and application acceptance allow up to 2,000 characters per cooking section; complete-plan and other limits remain. The same single repair receives bounded code/path/actual/max feedback. Failed and successful attempts record allowlisted metadata in existing state events; failed calls retain available usage/cost in existing model-call columns. No D1 migration or new model call is expected. The original V5 and V1–V4 remain callable.
+V5.1 reuses the exact V5 culinary instructions and fields. Only its versioned tool descriptions and application acceptance allow up to 2,000 characters per cooking section; complete-plan and other limits remain. The same single repair receives bounded code/path/actual/max feedback for section limits. A focused large-group probe exposed an existing retail purchase-display mismatch; V5.1 now sends its numeric actual/expected values and field path through that same rejected-tool result. The Retail Shopping validator and accepted rules remain unchanged. Failed and successful attempts record allowlisted metadata in existing state events; failed calls retain available usage/cost in existing model-call columns. No D1 migration or new model call is expected. The original V5 and V1–V4 remain callable.
 
 ## Regression surface and evidence plan
 
@@ -20,4 +20,4 @@ For material staging failure restore only the verified V4 Stage 1B Worker, verif
 
 ## Results
 
-Pending focused live evaluation, CI and isolated staging verification. Technical validity is not owner culinary acceptance.
+The first focused matched run used unchanged `gpt-6-astra`, medium reasoning and the 4,096-output-token ceiling. Its 32 calls completed without provider exhaustion. All four V5.1 small/medium serving-revision proposals passed the package validator; three of four sampled large-group V5.1 first proposals failed. A private follow-up identified a compound retail display whose leading package amount disagreed with `retail_total`; the unchanged V4 validator rejected it. The existing repair repeated the same mistake when told only `INVALID_PLAN_PROPOSAL`, then returned a valid complete package when given bounded numeric field feedback. This is controlled synthetic evidence, not an owner culinary-quality verdict. Raw outputs and blind mapping remain private in ignored `runs/` artifacts. Isolated staging verification remains pending.

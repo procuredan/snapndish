@@ -65,6 +65,22 @@ test('V5.1 cooking echo uses package bounds while older cooking bounds stay inta
     COOKING_QUALITY_MEAL_PACKAGE_TOOL.parameters.properties.sections);
 });
 
+test('retail rejection identifies only a numeric display mismatch for the single repair', () => {
+  const proposal = { ...failedProposal, sections: [{ section: 'Produce', items: [{
+    name: 'Potatoes', quantity: '1 × 5-lb bag plus 1 lb loose', have_status: 'need',
+    required_quantity: '6 lb', normalized_quantity: { amount: 6, unit: 'lb' },
+    retail_total: { amount: 6, unit: 'lb' },
+  }] }] };
+  const validation = {};
+  assert.equal(normalizeMealPlan(proposal, { requireFullPlan: true, requireRetail: true,
+    maxDirectionsLength: 2000, validation }), null);
+  assert.deepEqual(validation, { code: 'RETAIL_DISPLAY_TOTAL_MISMATCH',
+    field: 'sections[0].items[0].quantity', actual: 5, expected: 6 });
+  assert.deepEqual(boundedBridgeDiagnostic({ validation }).validation, validation);
+  proposal.sections[0].items[0].quantity = '1 × 6-lb bag';
+  assert.ok(candidate(proposal));
+});
+
 test('bridge diagnostics allow only bounded metadata', () => {
   const hostile = boundedBridgeDiagnostic({ stage: 'repair', requestId: 'req_good',
     response: { id: 'resp_good', status: 'incomplete',
