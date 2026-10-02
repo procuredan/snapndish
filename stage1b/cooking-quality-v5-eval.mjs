@@ -5,12 +5,14 @@ import { execFileSync } from 'node:child_process';
 import { instructionsFor, instructionsForRetailShopping, instructionsForCookingQuality,
   estimateUsd } from '../src/config.ts';
 import { RETAIL_MEAL_PACKAGE_TOOL, COOKING_QUALITY_MEAL_PACKAGE_TOOL,
+  COOKING_QUALITY_V51_MEAL_PACKAGE_TOOL,
   normalizeMealPlan } from '../live-lab/meal-plan.mjs';
 
 const model = process.env.MODEL || 'gpt-6-astra';
 const effort = process.env.REASONING_EFFORT || 'medium';
 const outputLimit = 4096;
 const source = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+const v51 = process.env.COOKING_V51 === '1';
 const cases = [
   { id: 'stir-fry-selected-equipment', heldOut: false, kind: 'package',
     facts: 'Two adults. They explicitly chose their wok and rice cooker. No allergies. The accepted meal is boneless chicken-thigh stir-fry with broccoli, bell pepper, a savory ginger sauce and jasmine rice. Use 12 oz chicken thighs. No other sauce ingredients have been specified.',
@@ -60,6 +62,17 @@ const cases = [
       { role: 'assistant', content: 'Start the sauce while the pasta water heats.' },
       { role: 'user', content: "I just realized I don't have lemon. What should I do?" }] },
 ];
+if (v51) cases.push(
+  { id: 'servings-two-to-four-shawarma', heldOut: false, kind: 'package',
+    facts: 'The accepted meal for two is chicken shawarma bowls with rice, cucumber-tomato salad and lemon-garlic yogurt. A skillet and rice cooker are available. The customer has 1 lb chicken, yogurt and rice, but unchecked Rice in Shopping because they are running low. No food has been cooked yet.',
+    turns: [{ role: 'user', content: 'Actually make this same complete meal for four. Keep the rice cooker and skillet.' }] },
+  { id: 'heldout-four-to-six-with-progress', heldOut: true, kind: 'package',
+    facts: 'The accepted meal for four is lemon chicken, roasted potatoes, green beans and herbed yogurt. The customer has already reported that the potatoes are roasting; this is a historical physical fact. The chicken and beans have not started. Oven and skillet available.',
+    turns: [{ role: 'user', content: 'Two more people are coming. Make the same meal for six and help me with what remains.' }] },
+  { id: 'heldout-brunch-twenty-to-thirty', heldOut: true, kind: 'package',
+    facts: 'Accepted family brunch for 20: soft scrambled eggs, roasted potatoes, yogurt-berry parfaits and citrus fruit. Oven and two burners. The customer has not started cooking.',
+    turns: [{ role: 'user', content: 'Make that entire brunch spread work for thirty people instead.' }] },
+);
 const arms = [
   { id: 'foundation', instructions: c => instructionsFor('A', c.facts), tool: null,
     input: c => [{ role: 'user', content: `Established customer and meal facts for this conversation: ${c.facts} When the person commits to the meal, provide its complete cooking plan in natural named sections, with quantities, important safety guidance and final assembly. Do not discuss Shopping.` }, ...c.turns] },
@@ -68,6 +81,8 @@ const arms = [
   { id: 'v5', instructions: c => instructionsForCookingQuality(c.facts), tool: COOKING_QUALITY_MEAL_PACKAGE_TOOL,
     input: c => c.turns },
 ];
+if (v51) arms.push({ id: 'v5.1', instructions: c => instructionsForCookingQuality(c.facts),
+  tool: COOKING_QUALITY_V51_MEAL_PACKAGE_TOOL, input: c => c.turns });
 const chosenCases = new Set((process.env.COOKING_V5_CASES || cases.map(c => c.id).join(',')).split(','));
 const chosenArms = new Set((process.env.COOKING_V5_ARMS || arms.map(a => a.id).join(',')).split(','));
 const runsPerCase = Math.max(1, Math.min(3, Number(process.env.COOKING_V5_REPEATS || 1)));
@@ -111,7 +126,8 @@ async function probe(c, arm, repeat) {
   if (!result) throw Error('INCOMPLETE_STREAM');
   const calls = (result.output || []).filter(x => x.type === 'function_call');
   const plan = arm.tool && calls.length === 1 && calls[0].name === 'publish_meal_plan'
-    ? normalizeMealPlan(calls[0].arguments, { requireFullPlan: true, requireRetail: true }) : null;
+    ? normalizeMealPlan(calls[0].arguments, { requireFullPlan: true, requireRetail: true,
+      maxDirectionsLength: arm.id === 'v5.1' ? 2000 : 1400 }) : null;
   const usage = result.usage || {};
   return { case: c.id, repeat, arm: arm.id, status: result.status,
     incompleteReason: result.incomplete_details?.reason || null,
@@ -151,7 +167,7 @@ for (const c of selectedCases) {
 
 fs.mkdirSync('runs', { recursive: true });
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-const prefix = `runs/cooking-quality-v5-${stamp}`;
+const prefix = `runs/cooking-quality-${v51 ? 'v51' : 'v5'}-${stamp}`;
 fs.writeFileSync(`${prefix}.private.json`, JSON.stringify({ at: new Date().toISOString(), source,
   model, effort, outputLimit, cases: selectedCases, results }, null, 2), { mode: 0o600 });
 const reviewCases = ['stir-fry-selected-equipment', 'simple-chickpea-pasta', 'business-breakfast-twenty'];

@@ -1,0 +1,260 @@
+{
+  "meal": "Chicken shawarma bowls with rice, cucumber-tomato salad, and lemon-garlic yogurt",
+  "servings": 4,
+  "sections": [
+    {
+      "section": "Meat",
+      "items": [
+        {
+          "name": "Boneless chicken thighs",
+          "quantity": "2 lb",
+          "have_status": "confirmed",
+          "required_quantity": "2 lb",
+          "normalized_quantity": {
+            "amount": 2,
+            "unit": "lb"
+          },
+          "retail_total": {
+            "amount": 2,
+            "unit": "lb"
+          }
+        }
+      ]
+    },
+    {
+      "section": "Dairy",
+      "items": [
+        {
+          "name": "Plain yogurt",
+          "quantity": "1 × 16-oz tub",
+          "have_status": "confirmed",
+          "required_quantity": "1½ cups (360 g)",
+          "normalized_quantity": {
+            "amount": 360,
+            "unit": "g"
+          },
+          "retail_total": {
+            "amount": 454,
+            "unit": "g"
+          }
+        }
+      ]
+    },
+    {
+      "section": "Produce",
+      "items": [
+        {
+          "name": "English cucumber",
+          "quantity": "2 cucumbers",
+          "have_status": "need",
+          "required_quantity": "2 English cucumbers",
+          "normalized_quantity": {
+            "amount": 2,
+            "unit": "cucumber"
+          },
+          "retail_total": {
+            "amount": 2,
+            "unit": "cucumber"
+          }
+        },
+        {
+          "name": "Tomatoes",
+          "quantity": "4 medium tomatoes",
+          "have_status": "need",
+          "required_quantity": "4 medium tomatoes",
+          "normalized_quantity": {
+            "amount": 4,
+            "unit": "tomato"
+          },
+          "retail_total": {
+            "amount": 4,
+            "unit": "tomato"
+          }
+        },
+        {
+          "name": "Lemon",
+          "quantity": "2 large lemons",
+          "have_status": "need",
+          "required_quantity": "6 tbsp juice",
+          "normalized_quantity": {
+            "amount": 6,
+            "unit": "tbsp juice"
+          },
+          "retail_total": {
+            "amount": 8,
+            "unit": "tbsp juice"
+          }
+        },
+        {
+          "name": "Garlic",
+          "quantity": "1 bulb",
+          "have_status": "need",
+          "required_quantity": "6 cloves",
+          "normalized_quantity": {
+            "amount": 6,
+            "unit": "clove"
+          },
+          "retail_total": {
+            "amount": 10,
+            "unit": "clove"
+          }
+        },
+        {
+          "name": "Flat-leaf parsley",
+          "quantity": "1 bunch (about 30 g usable parsley)",
+          "have_status": "need",
+          "required_quantity": "½ cup chopped (30 g)",
+          "normalized_quantity": {
+            "amount": 30,
+            "unit": "g"
+          },
+          "retail_total": {
+            "amount": 30,
+            "unit": "g"
+          }
+        }
+      ]
+    },
+    {
+      "section": "Rice and pantry",
+      "items": [
+        {
+          "name": "Rice",
+          "quantity": "1 × 1-lb bag",
+          "have_status": "confirmed",
+          "required_quantity": "1½ cups dry (about 280 g)",
+          "normalized_quantity": {
+            "amount": 280,
+            "unit": "g"
+          },
+          "retail_total": {
+            "amount": 454,
+            "unit": "g"
+          }
+        },
+        {
+          "name": "Olive oil",
+          "quantity": "1 small 250-mL bottle",
+          "have_status": "assumed",
+          "required_quantity": "6 tbsp (90 mL)",
+          "normalized_quantity": {
+            "amount": 90,
+            "unit": "ml"
+          },
+          "retail_total": {
+            "amount": 250,
+            "unit": "ml"
+          }
+        }
+      ]
+    },
+    {
+      "section": "Spices and seasonings",
+      "items": [
+        {
+          "name": "Ground cumin",
+          "quantity": "1 small jar (about 1 oz)",
+          "have_status": "need",
+          "required_quantity": "1 tbsp (6 g)",
+          "normalized_quantity": {
+            "amount": 6,
+            "unit": "g"
+          },
+          "retail_total": {
+            "amount": 28,
+            "unit": "g"
+          }
+        },
+        {
+          "name": "Ground coriander",
+          "quantity": "1 small jar (about 1 oz)",
+          "have_status": "need",
+          "required_quantity": "2 tsp (4 g)",
+          "normalized_quantity": {
+            "amount": 4,
+            "unit": "g"
+          },
+          "retail_total": {
+            "amount": 28,
+            "unit": "g"
+          }
+        },
+        {
+          "name": "Paprika",
+          "quantity": "1 small jar (about 1 oz)",
+          "have_status": "need",
+          "required_quantity": "2 tsp (4.6 g)",
+          "normalized_quantity": {
+            "amount": 4.6,
+            "unit": "g"
+          },
+          "retail_total": {
+            "amount": 28,
+            "unit": "g"
+          }
+        },
+        {
+          "name": "Ground cinnamon",
+          "quantity": "1 small jar (about 1 oz)",
+          "have_status": "need",
+          "required_quantity": "½ tsp (1.4 g)",
+          "normalized_quantity": {
+            "amount": 1.4,
+            "unit": "g"
+          },
+          "retail_total": {
+            "amount": 28,
+            "unit": "g"
+          }
+        },
+        {
+          "name": "Fine salt",
+          "quantity": "1 small 26-oz carton",
+          "have_status": "assumed",
+          "required_quantity": "2 tsp (12 g)",
+          "normalized_quantity": {
+            "amount": 12,
+            "unit": "g"
+          },
+          "retail_total": {
+            "amount": 737,
+            "unit": "g"
+          }
+        },
+        {
+          "name": "Black pepper",
+          "quantity": "1 small jar (about 1 oz)",
+          "have_status": "assumed",
+          "required_quantity": "½ tsp (1.2 g)",
+          "normalized_quantity": {
+            "amount": 1.2,
+            "unit": "g"
+          },
+          "retail_total": {
+            "amount": 28,
+            "unit": "g"
+          }
+        }
+      ]
+    }
+  ],
+  "full_plan": [
+    {
+      "title": "Start the rice; prepare the cold components while it cooks",
+      "directions": "Allow about 55–70 minutes with white rice and two batches of chicken; brown rice or additional batches take longer. Use the skillet for rice first, then chicken, with a lid or tightly fitted foil to trap steam during rice cooking.\nRinse 1½ cups dry rice (about 280 g). For long-grain white rice, put it in the skillet with 2½ cups water and ½ tsp fine salt. The skillet should comfortably hold the rice and water with room for bubbling and expansion. Bring to a boil, cover tightly, and reduce the heat to its lowest setting. Cook 15–18 minutes without lifting the cover, until the water is absorbed. Turn off the heat and rest covered for 10 minutes. If your rice package specifies a different water ratio or time, follow that instead, especially for brown or short-grain rice. If the grains remain firm and the pan is dry, add 2–4 tbsp water and cook covered a few minutes longer.\nWhile the rice cooks and rests, prepare the yogurt and salad, then season the chicken. Fluff the cooked rice, transfer it to a serving bowl, and cover to retain warmth while the chicken cooks. Wipe the skillet clean and dry before searing."
+    },
+    {
+      "title": "Make the lemon-garlic yogurt and crisp salad",
+      "directions": "Juice 2 large lemons and measure 6 tbsp juice for the meal. Finely grate or mince 6 garlic cloves, keeping 2 for the yogurt and 4 for the chicken.\nMix 1½ cups plain yogurt (360 g), 2 tbsp lemon juice, 2 grated garlic cloves, and ¼ tsp fine salt. If very thick, stir in 2–4 tsp water until spoonable. Refrigerate until serving.\nDice 2 English cucumbers and 4 medium tomatoes. Chop ½ cup parsley (30 g) and combine with the vegetables. Separately mix 2 tbsp olive oil, 2 tbsp lemon juice, and ½ tsp fine salt. Keep the dressing separate until serving so the vegetables stay crisp."
+    },
+    {
+      "title": "Season the chicken, then sear in batches",
+      "directions": "Pat 2 lb boneless chicken thighs dry without rinsing them, and unfold them to lie flat. Mix 2 tbsp olive oil, the reserved 4 minced garlic cloves, 1 tbsp ground cumin, 2 tsp ground coriander, 2 tsp paprika, ½ tsp ground cinnamon, ¾ tsp fine salt, and ½ tsp black pepper. Rub over all the chicken. Refrigerate until the skillet is available. Wash hands and clean raw-chicken surfaces before handling ready-to-eat ingredients.\nAfter transferring the rice out, heat the clean, dry skillet over medium-high heat. Measure 2 tbsp olive oil for searing and divide it between batches. Cook the thighs in a single uncrowded layer, likely in two batches, keeping uncooked chicken refrigerated while it waits. Cook each batch about 5–7 minutes on the first side without moving it, then flip and cook another 5–7 minutes. Reduce the heat to medium if the garlic or spices begin to darken too quickly. If loose spice bits burn between batches, carefully wipe them out before adding the next portion of oil and chicken.\nCheck each thigh in its thickest part with a thermometer: chicken must reach at least 165°F; thighs are especially tender around 175°F. If the outside browns before the middle is done, lower the heat and continue cooking, flipping as needed. Transfer cooked chicken to a clean platter and loosely cover while the next batch cooks. Rest the final batch for 5 minutes, then slice all the chicken across the grain. Toss with the remaining 2 tbsp lemon juice and the collected resting juices."
+    },
+    {
+      "title": "Assemble four bowls",
+      "directions": "Toss all the cucumber, tomatoes, and parsley with the prepared salad dressing just before serving. Divide the rice among four bowls. Top with all the sliced chicken and its juices, and place the salad alongside rather than stirring it into the rice. Spoon the lemon-garlic yogurt over the chicken or serve alongside, keeping the contrast between warm savory chicken and cool crisp vegetables.\nRefrigerate leftovers within 2 hours, placing rice and chicken in shallow containers and storing them separately from the salad and yogurt."
+    }
+  ],
+  "current_action": "Start 1½ cups dry rice in your skillet with 2½ cups water and ½ tsp fine salt for long-grain white rice, or follow your rice package's water ratio and timing. While it cooks covered, make the lemon-garlic yogurt and chop the salad; keep the dressing separate until serving."
+}

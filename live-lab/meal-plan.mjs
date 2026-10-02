@@ -76,6 +76,15 @@ export const COOKING_QUALITY_MEAL_PACKAGE_TOOL = structuredClone(RETAIL_MEAL_PAC
 COOKING_QUALITY_MEAL_PACKAGE_TOOL.parameters.properties.full_plan.description =
   'The complete plan for this accepted meal in free-form culinary sections. Make consequential cooking decisions for its ingredients, scale, constraints and selected equipment. Explain useful timing, heat, texture, taste and dependencies where the cook needs them. Include quantities where measured or added, every material component, necessary safety guidance and final assembly. Use natural paragraphs or measured lists; shorter output is not the goal.';
 
+// V5.1 describes acceptance maxima, not a new culinary writing objective.
+export const COOKING_QUALITY_V51_MEAL_PACKAGE_TOOL = structuredClone(COOKING_QUALITY_MEAL_PACKAGE_TOOL);
+COOKING_QUALITY_V51_MEAL_PACKAGE_TOOL.parameters.properties.full_plan.description +=
+  ' Application acceptance maxima: 1–14 sections; at most 2,000 characters per directions and 10,000 serialized characters for the complete plan.';
+COOKING_QUALITY_V51_MEAL_PACKAGE_TOOL.parameters.properties.full_plan.items.properties.title.description =
+  'Application acceptance maximum: 80 characters.';
+COOKING_QUALITY_V51_MEAL_PACKAGE_TOOL.parameters.properties.current_action.description +=
+  ' Application acceptance maximum: 1,200 characters.';
+
 function normalizedAmount(value) {
   if (!value || typeof value !== 'object' || !Number.isFinite(value.amount) ||
     value.amount <= 0 || value.amount > 1_000_000 || typeof value.unit !== 'string' ||
@@ -157,7 +166,12 @@ export function updatePurchaseRequirements(plan) {
   return plan;
 }
 
-export function normalizeMealPlan(raw, { requireFullPlan = false, requireRetail = false, priorPlan = null } = {}) {
+export function normalizeMealPlan(raw, { requireFullPlan = false, requireRetail = false,
+  priorPlan = null, maxDirectionsLength = 1400, validation = null } = {}) {
+  const reject = (code, field, actual, max) => {
+    if (validation) Object.assign(validation, { code, field, actual, max });
+    return null;
+  };
   let value;
   try { value = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return null; }
   if (!value || typeof value !== 'object' || typeof value.meal !== 'string' ||
@@ -199,13 +213,24 @@ export function normalizeMealPlan(raw, { requireFullPlan = false, requireRetail 
   }
   let fullPlan = null;
   if (value.full_plan !== undefined && value.full_plan !== null) {
-    if (!Array.isArray(value.full_plan) || value.full_plan.length < 1 || value.full_plan.length > 14 ||
-      value.full_plan.some(x => !x || typeof x.title !== 'string' || !x.title.trim() || x.title.length > 80 ||
-        typeof x.directions !== 'string' || !x.directions.trim() || x.directions.length > 1400)) return null;
+    if (!Array.isArray(value.full_plan) || value.full_plan.length < 1 || value.full_plan.length > 14)
+      return reject('PLAN_SECTION_COUNT', 'full_plan', value.full_plan?.length ?? 0, 14);
+    for (const [index, section] of value.full_plan.entries()) {
+      if (!section || typeof section.title !== 'string' || !section.title.trim() ||
+        typeof section.directions !== 'string' || !section.directions.trim()) return null;
+      if (section.title.length > 80)
+        return reject('PLAN_TITLE_LENGTH', `full_plan[${index}].title`, section.title.length, 80);
+      if (section.directions.length > maxDirectionsLength)
+        return reject('PLAN_DIRECTIONS_LENGTH', `full_plan[${index}].directions`,
+          section.directions.length, maxDirectionsLength);
+    }
     fullPlan = value.full_plan.map(x => ({ title: x.title.trim(), directions: x.directions.trim() }));
-    if (JSON.stringify(fullPlan).length > 10000) return null;
+    if (JSON.stringify(fullPlan).length > 10000)
+      return reject('PLAN_TOTAL_LENGTH', 'full_plan', JSON.stringify(fullPlan).length, 10000);
     if (typeof value.current_action !== 'string' || !value.current_action.trim() ||
-      value.current_action.length > 1200) return null;
+      value.current_action.length > 1200)
+      return typeof value.current_action === 'string' && value.current_action.length > 1200
+        ? reject('CURRENT_ACTION_LENGTH', 'current_action', value.current_action.length, 1200) : null;
   }
   if (requireFullPlan && !fullPlan) return null;
   const plan = { meal: value.meal.trim(), servings: value.servings, sections };
@@ -257,6 +282,8 @@ export function reconcileShopping(prior, plan) {
 export function planFromOutput(output, options = {}) {
   const calls = (output || []).filter(item => item.type === 'function_call' && item.name === MEAL_PLAN_TOOL.name);
   if (calls.length !== 1) return { plan: null, reason: calls.length ? 'MULTIPLE_PLAN_CALLS' : null, calls };
-  const plan = normalizeMealPlan(calls[0].arguments, options);
-  return { plan, reason: plan ? null : 'INVALID_PLAN_PROPOSAL', calls };
+  const validation = {};
+  const plan = normalizeMealPlan(calls[0].arguments, { ...options, validation });
+  return { plan, reason: plan ? null : 'INVALID_PLAN_PROPOSAL', calls,
+    validation: plan || !validation.code ? null : validation };
 }

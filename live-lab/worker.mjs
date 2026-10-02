@@ -1,9 +1,10 @@
-import { instructionsFor, instructionsForCandidate, instructionsForNextFlow, instructionsForCookingMode, instructionsForCookingModeV2, instructionsForMealPackage, instructionsForCookingContent, instructionsForCookingVoice, instructionsForRetailShopping, instructionsForCookingQuality, estimateUsd, BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, NEXT_FLOW_BEHAVIOR_VERSION, COOKING_BEHAVIOR_VERSION, COOKING_PLAN_BEHAVIOR_VERSION, MEAL_PACKAGE_BEHAVIOR_VERSION, COOKING_CONTENT_BEHAVIOR_VERSION, COOKING_VOICE_BEHAVIOR_VERSION, RETAIL_SHOPPING_BEHAVIOR_VERSION, COOKING_QUALITY_BEHAVIOR_VERSION, CONTEXT_VERSION, SCENARIO_VERSION } from '../src/config.ts';
+import { instructionsFor, instructionsForCandidate, instructionsForNextFlow, instructionsForCookingMode, instructionsForCookingModeV2, instructionsForMealPackage, instructionsForCookingContent, instructionsForCookingVoice, instructionsForRetailShopping, instructionsForCookingQuality, estimateUsd, BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, NEXT_FLOW_BEHAVIOR_VERSION, COOKING_BEHAVIOR_VERSION, COOKING_PLAN_BEHAVIOR_VERSION, MEAL_PACKAGE_BEHAVIOR_VERSION, COOKING_CONTENT_BEHAVIOR_VERSION, COOKING_VOICE_BEHAVIOR_VERSION, RETAIL_SHOPPING_BEHAVIOR_VERSION, COOKING_QUALITY_BEHAVIOR_VERSION, COOKING_QUALITY_V51_BEHAVIOR_VERSION, CONTEXT_VERSION, SCENARIO_VERSION } from '../src/config.ts';
 import { page } from './ui.mjs';
 import { stripJpegMetadata } from './jpeg.mjs';
 import { serviceWorker } from './push-sw.mjs';
-import { MEAL_PLAN_TOOL, MEAL_PACKAGE_TOOL, RETAIL_MEAL_PACKAGE_TOOL, COOKING_QUALITY_MEAL_PACKAGE_TOOL, normalizeMealPlan, planFromOutput, updatePurchaseRequirements } from './meal-plan.mjs';
-import { COOKING_PROGRESS_TOOL, COOKING_PROGRESS_TOOL_V2, cookingFromOutput } from './cooking-progress.mjs';
+import { MEAL_PLAN_TOOL, MEAL_PACKAGE_TOOL, RETAIL_MEAL_PACKAGE_TOOL, COOKING_QUALITY_MEAL_PACKAGE_TOOL, COOKING_QUALITY_V51_MEAL_PACKAGE_TOOL, normalizeMealPlan, planFromOutput, updatePurchaseRequirements } from './meal-plan.mjs';
+import { COOKING_PROGRESS_TOOL, COOKING_PROGRESS_TOOL_V2, COOKING_PROGRESS_TOOL_V51, cookingFromOutput } from './cooking-progress.mjs';
+import { boundedBridgeDiagnostic } from './bridge-diagnostics.mjs';
 import { realtimeFailureDiagnostic } from './realtime-diagnostics.mjs';
 
 const DAY = 86_400_000;
@@ -15,13 +16,16 @@ const CUSTOMER_COOKIE = '__Host-sndlab-customer';
 const encoder = new TextEncoder();
 const isStage1b = env => env.STAGE1B_ENABLED === 'true';
 const isPackageVersion = version => [MEAL_PACKAGE_BEHAVIOR_VERSION, COOKING_CONTENT_BEHAVIOR_VERSION,
-  COOKING_VOICE_BEHAVIOR_VERSION, RETAIL_SHOPPING_BEHAVIOR_VERSION, COOKING_QUALITY_BEHAVIOR_VERSION].includes(version);
+  COOKING_VOICE_BEHAVIOR_VERSION, RETAIL_SHOPPING_BEHAVIOR_VERSION, COOKING_QUALITY_BEHAVIOR_VERSION,
+  COOKING_QUALITY_V51_BEHAVIOR_VERSION].includes(version);
 const isRetailPackageVersion = version => version === RETAIL_SHOPPING_BEHAVIOR_VERSION ||
-  version === COOKING_QUALITY_BEHAVIOR_VERSION;
+  version === COOKING_QUALITY_BEHAVIOR_VERSION || version === COOKING_QUALITY_V51_BEHAVIOR_VERSION;
 const isBridgeVersion = version => version === COOKING_PLAN_BEHAVIOR_VERSION || isPackageVersion(version);
 const isCookingVersion = version => version === COOKING_BEHAVIOR_VERSION || isBridgeVersion(version);
 const isNextFlow = version => version === NEXT_FLOW_BEHAVIOR_VERSION || isCookingVersion(version);
-const toolsFor = version => version === COOKING_QUALITY_BEHAVIOR_VERSION
+const toolsFor = version => version === COOKING_QUALITY_V51_BEHAVIOR_VERSION
+  ? [COOKING_QUALITY_V51_MEAL_PACKAGE_TOOL, COOKING_PROGRESS_TOOL_V51]
+  : version === COOKING_QUALITY_BEHAVIOR_VERSION
   ? [COOKING_QUALITY_MEAL_PACKAGE_TOOL, COOKING_PROGRESS_TOOL_V2] : version === RETAIL_SHOPPING_BEHAVIOR_VERSION
   ? [RETAIL_MEAL_PACKAGE_TOOL, COOKING_PROGRESS_TOOL_V2] : isPackageVersion(version)
   ? [MEAL_PACKAGE_TOOL, COOKING_PROGRESS_TOOL_V2] : version === COOKING_PLAN_BEHAVIOR_VERSION
@@ -216,13 +220,16 @@ function nextCookingState(session, proposed, assistantId, userTurnId, at) {
 function mealProposal(output, session, version) {
   return planFromOutput(output, isPackageVersion(version)
     ? { requireFullPlan: true, requireRetail: isRetailPackageVersion(version),
-      priorPlan: session.meal_plan_json ? JSON.parse(session.meal_plan_json) : null }
+      priorPlan: session.meal_plan_json ? JSON.parse(session.meal_plan_json) : null,
+      maxDirectionsLength: version === COOKING_QUALITY_V51_BEHAVIOR_VERSION ? 2000 : 1400 }
     : {});
 }
 
 function cookingProposalForVersion(output, userText, session, version, proposedPlan = null) {
   const proposal = cookingFromOutput(output, userText,
-    isBridgeVersion(version) && needsFullCookingPlan(session) && !proposedPlan);
+    isBridgeVersion(version) && needsFullCookingPlan(session) && !proposedPlan,
+    version === COOKING_QUALITY_V51_BEHAVIOR_VERSION
+      ? { maxDirectionsLength: 2000, maxPlanLength: 10000, minSections: 1, maxSections: 14 } : {});
   if (isPackageVersion(version) && proposal.cooking?.full_plan) {
     const acceptedPlan = proposedPlan?.full_plan ??
       (session.meal_plan_json ? JSON.parse(session.meal_plan_json).full_plan : null);
@@ -527,7 +534,8 @@ function firstUsefulProxy(text) {
 function behaviorFor(env, context, hasAcceptedMeal = false, cookingActive = false) {
   const version = env.BEHAVIOR_VERSION || BEHAVIOR_VERSION;
   if (isPackageVersion(version) && isStage1b(env) && (!env.ARM || env.ARM === 'C'))
-    return { version, instructions: (version === COOKING_QUALITY_BEHAVIOR_VERSION ? instructionsForCookingQuality
+    return { version, instructions: ([COOKING_QUALITY_BEHAVIOR_VERSION,
+      COOKING_QUALITY_V51_BEHAVIOR_VERSION].includes(version) ? instructionsForCookingQuality
       : version === RETAIL_SHOPPING_BEHAVIOR_VERSION ? instructionsForRetailShopping
       : version === COOKING_VOICE_BEHAVIOR_VERSION ? instructionsForCookingVoice
       : version === COOKING_CONTENT_BEHAVIOR_VERSION ? instructionsForCookingContent
@@ -742,7 +750,8 @@ async function startVoice(request, env, id) {
       behaviorVersion: voiceBehaviorVersion, connectMs,
       ...(isNextFlow(behavior.version) ? { syncInstructions: instructions } : {}),
       ...(isCookingVersion(behavior.version) ? { cookingSyncInstructions:
-        (behavior.version === COOKING_QUALITY_BEHAVIOR_VERSION ? instructionsForCookingQuality :
+        ([COOKING_QUALITY_BEHAVIOR_VERSION, COOKING_QUALITY_V51_BEHAVIOR_VERSION].includes(behavior.version)
+          ? instructionsForCookingQuality :
           behavior.version === RETAIL_SHOPPING_BEHAVIOR_VERSION ? instructionsForRetailShopping :
           behavior.version === COOKING_VOICE_BEHAVIOR_VERSION ? instructionsForCookingVoice :
           behavior.version === COOKING_CONTENT_BEHAVIOR_VERSION ? instructionsForCookingContent :
@@ -1226,7 +1235,7 @@ async function dispatchReturns(env) {
 
 async function streamTurn(request, env, ctx, id) {
   if (!env.OPENAI_API_KEY) return json({ error: 'MODEL_UNAVAILABLE' }, 503);
-  if (![BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, NEXT_FLOW_BEHAVIOR_VERSION, COOKING_BEHAVIOR_VERSION, COOKING_PLAN_BEHAVIOR_VERSION, MEAL_PACKAGE_BEHAVIOR_VERSION, COOKING_CONTENT_BEHAVIOR_VERSION, COOKING_VOICE_BEHAVIOR_VERSION, RETAIL_SHOPPING_BEHAVIOR_VERSION, COOKING_QUALITY_BEHAVIOR_VERSION].includes(env.BEHAVIOR_VERSION || BEHAVIOR_VERSION)
+  if (![BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, NEXT_FLOW_BEHAVIOR_VERSION, COOKING_BEHAVIOR_VERSION, COOKING_PLAN_BEHAVIOR_VERSION, MEAL_PACKAGE_BEHAVIOR_VERSION, COOKING_CONTENT_BEHAVIOR_VERSION, COOKING_VOICE_BEHAVIOR_VERSION, RETAIL_SHOPPING_BEHAVIOR_VERSION, COOKING_QUALITY_BEHAVIOR_VERSION, COOKING_QUALITY_V51_BEHAVIOR_VERSION].includes(env.BEHAVIOR_VERSION || BEHAVIOR_VERSION)
     || (env.BEHAVIOR_VERSION === CANDIDATE_BEHAVIOR_VERSION && env.ARM && env.ARM !== 'C')
     || (isNextFlow(env.BEHAVIOR_VERSION) && (!isStage1b(env) || (env.ARM && env.ARM !== 'C'))))
     return json({ error: 'INVALID_BEHAVIOR_CONFIGURATION' }, 503);
@@ -1273,8 +1282,10 @@ async function streamTurn(request, env, ctx, id) {
       const task = (async () => {
         const started = performance.now();
         let text = '', firstTextMs = null, firstUsefulMs = null, firstUsefulExcerpt = null, retryCount = 0, completed = null;
-        let incompleteReason = null;
+        let incompleteReason = null, incompleteResponse = null;
         let bridgeContinuationCount = 0, bridgeRejectedReason = null, bridgeRejectedCalls = [];
+        const v51 = behavior.version === COOKING_QUALITY_V51_BEHAVIOR_VERSION;
+        const bridgeDiagnostics = [];
         try {
           sendSse(controller, { type: 'accepted', turnId, revision });
           let provider;
@@ -1294,6 +1305,7 @@ async function streamTurn(request, env, ctx, id) {
             await new Promise(resolve => setTimeout(resolve, 600 * 2 ** attempt));
           }
           if (!provider?.body) throw new Error('NO_STREAM');
+          const primaryRequestId = provider.headers.get('x-request-id');
           const reader = provider.body.getReader();
           const decoder = new TextDecoder();
           let buffer = '';
@@ -1312,9 +1324,11 @@ async function streamTurn(request, env, ctx, id) {
               }
               sendSse(controller, { type: 'delta', text: e.delta });
             } else if (e.type === 'response.completed') completed = e.response;
-            else if (e.type === 'response.incomplete')
+            else if (e.type === 'response.incomplete') {
+              incompleteResponse = e.response;
               incompleteReason = e.response?.incomplete_details?.reason === 'max_output_tokens'
                 ? 'max_output_tokens' : 'other';
+            }
             else if (e.type === 'error' || e.type === 'response.failed') throw new Error('PROVIDER_STREAM_FAILED');
           }
           while (true) {
@@ -1326,26 +1340,46 @@ async function streamTurn(request, env, ctx, id) {
             while ((i = buffer.indexOf('\n\n')) >= 0) { frame(buffer.slice(0, i)); buffer = buffer.slice(i + 2); }
           }
            if (buffer.trim()) frame(buffer);
-           if (!completed) throw new Error(incompleteReason === 'max_output_tokens'
-             ? 'INCOMPLETE_MAX_OUTPUT_TOKENS' : 'INCOMPLETE_STREAM');
+           if (!completed) {
+             if (v51) bridgeDiagnostics.push(boundedBridgeDiagnostic({ stage: 'primary',
+               response: incompleteResponse, requestId: primaryRequestId, outcome: 'incomplete',
+               durationMs: Math.round(performance.now() - started) }));
+             throw new Error(incompleteReason === 'max_output_tokens'
+               ? 'INCOMPLETE_MAX_OUTPUT_TOKENS' : 'INCOMPLETE_STREAM');
+           }
+           if (v51 && !Array.isArray(completed.output)) {
+             bridgeDiagnostics.push(boundedBridgeDiagnostic({ stage: 'primary', response: completed,
+               requestId: primaryRequestId, outcome: 'rejected',
+               durationMs: Math.round(performance.now() - started) }));
+             throw new Error('MALFORMED_PROVIDER_RESPONSE');
+           }
            let proposed = isNextFlow(behavior.version)
              ? mealProposal(completed.output, session, behavior.version) : { plan: null, reason: null, calls: [] };
            let cookingProposal = isCookingVersion(behavior.version)
              ? cookingProposalForVersion(completed.output, accepted.text, session, behavior.version, proposed.plan)
              : { cooking: null, reason: null, calls: [] };
+           if (v51) bridgeDiagnostics.push(boundedBridgeDiagnostic({ stage: 'primary', response: completed,
+             requestId: primaryRequestId,
+             validation: proposed.validation, outcome: proposed.reason || cookingProposal.reason ? 'rejected' : null,
+             durationMs: Math.round(performance.now() - started) }));
            if (isBridgeVersion(behavior.version) &&
              ((proposed.reason && proposed.calls.length === 1) ||
                (cookingProposal.reason && cookingProposal.calls.length === 1))) {
              const failed = cookingProposal.reason ? cookingProposal : proposed;
              const rejectedCall = failed.calls[0];
              const rejection = failed.reason;
+             const boundedValidation = v51 && failed.validation
+               ? boundedBridgeDiagnostic({ validation: failed.validation }).validation : null;
              bridgeRejectedReason = rejection;
              bridgeRejectedCalls = [{ name: rejectedCall.name, arguments: rejectedCall.arguments,
                rejected_reason: rejection }];
              const continuationInput = [...messages, ...(completed.output || []),
-               ...(rejectedCall.call_id ? [{ type: 'function_call_output', call_id: rejectedCall.call_id,
-                 output: JSON.stringify({ accepted: false, reason: rejection }) }]
+              ...(rejectedCall.call_id ? [{ type: 'function_call_output', call_id: rejectedCall.call_id,
+                 output: JSON.stringify({ accepted: false, reason: rejection,
+                   ...(boundedValidation ? { validation: boundedValidation } : {}) }) }]
                  : [{ role: 'user', content: `The application rejected the proposed operation: ${rejection}.` }])];
+             const repairStarted = performance.now();
+             bridgeContinuationCount = 1;
              const recovery = await fetch('https://api.openai.com/v1/responses', {
                method: 'POST', headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`,
                  'Content-Type': 'application/json' },
@@ -1354,11 +1388,23 @@ async function streamTurn(request, env, ctx, id) {
                  input: continuationInput, reasoning: { effort }, tools: toolsFor(behavior.version),
                  tool_choice: 'auto', max_output_tokens: 4096, store: false }),
              });
-             if (!recovery.ok) throw new Error(`BRIDGE_RECOVERY_HTTP_${recovery.status}`);
-             const repaired = await recovery.json();
-             bridgeContinuationCount = 1;
+             if (!recovery.ok) {
+               if (v51) bridgeDiagnostics.push(boundedBridgeDiagnostic({ stage: 'repair',
+                 requestId: recovery.headers.get('x-request-id'),
+                 httpStatus: recovery.status, outcome: 'http_error',
+                 durationMs: Math.round(performance.now() - repairStarted) }));
+               throw new Error(`BRIDGE_RECOVERY_HTTP_${recovery.status}`);
+             }
+             let repaired;
+             try { repaired = await recovery.json(); }
+             catch {
+               if (v51) bridgeDiagnostics.push(boundedBridgeDiagnostic({ stage: 'repair',
+                 requestId: recovery.headers.get('x-request-id'),
+                 outcome: 'bad_json', durationMs: Math.round(performance.now() - repairStarted) }));
+               throw new Error('BRIDGE_RECOVERY_BAD_JSON');
+             }
              const earlierUsage = completed.usage || {};
-             const laterUsage = repaired.usage || {};
+             const laterUsage = repaired && typeof repaired === 'object' ? repaired.usage || {} : {};
              completed = { ...repaired, usage: {
                input_tokens: (earlierUsage.input_tokens || 0) + (laterUsage.input_tokens || 0),
                output_tokens: (earlierUsage.output_tokens || 0) + (laterUsage.output_tokens || 0),
@@ -1367,6 +1413,20 @@ async function streamTurn(request, env, ctx, id) {
                output_tokens_details: { reasoning_tokens: (earlierUsage.output_tokens_details?.reasoning_tokens || 0) +
                  (laterUsage.output_tokens_details?.reasoning_tokens || 0) },
              } };
+             if (v51 && (!repaired || typeof repaired !== 'object' ||
+               (repaired.status === 'completed' && !Array.isArray(repaired.output)))) {
+               bridgeDiagnostics.push(boundedBridgeDiagnostic({ stage: 'repair', response: repaired,
+                 requestId: recovery.headers.get('x-request-id'), outcome: 'rejected',
+                 durationMs: Math.round(performance.now() - repairStarted) }));
+               throw new Error('BRIDGE_RECOVERY_MALFORMED_RESPONSE');
+             }
+             if (v51 && repaired.status !== 'completed') {
+               bridgeDiagnostics.push(boundedBridgeDiagnostic({ stage: 'repair', response: repaired,
+                 requestId: recovery.headers.get('x-request-id'),
+                 outcome: 'incomplete', durationMs: Math.round(performance.now() - repairStarted) }));
+               throw new Error(repaired.incomplete_details?.reason === 'max_output_tokens'
+                 ? 'BRIDGE_RECOVERY_INCOMPLETE_MAX_OUTPUT_TOKENS' : 'BRIDGE_RECOVERY_INCOMPLETE');
+             }
              proposed = mealProposal(completed.output, session, behavior.version);
              cookingProposal = cookingProposalForVersion(completed.output, accepted.text,
                session, behavior.version, proposed.plan);
@@ -1376,8 +1436,16 @@ async function streamTurn(request, env, ctx, id) {
                text += (text ? '\n\n' : '') + recoveryText;
                sendSse(controller, { type: 'delta', text: (text === recoveryText ? '' : '\n\n') + recoveryText });
              }
+             if (v51) bridgeDiagnostics.push(boundedBridgeDiagnostic({ stage: 'repair', response: repaired,
+               requestId: recovery.headers.get('x-request-id'),
+               validation: proposed.validation,
+               outcome: proposed.reason || cookingProposal.reason ? 'rejected'
+                 : proposed.plan || cookingProposal.cooking || recoveryText ? 'accepted' : 'no_usable_output',
+               durationMs: Math.round(performance.now() - repairStarted) }));
              if (!proposed.plan && !cookingProposal.cooking && !recoveryText)
-               throw new Error('BRIDGE_RECOVERY_EMPTY');
+               throw new Error(v51 && (proposed.reason || cookingProposal.reason)
+                 ? 'BRIDGE_RECOVERY_INVALID_PROPOSAL'
+                 : v51 ? 'BRIDGE_RECOVERY_NO_USABLE_OUTPUT' : 'BRIDGE_RECOVERY_EMPTY');
            }
            if (cookingProposal.cooking && !session.meal_plan_json && !proposed.plan) {
              cookingProposal.cooking = null;
@@ -1557,6 +1625,12 @@ async function streamTurn(request, env, ctx, id) {
                (id,session_id,turn_id,revision,kind,at,details_json)
                VALUES (?,?,?,?,?,?,?)`).bind(crypto.randomUUID(), id, turnId, revision,
                  'tool_only_transition_rendered', assistantAt, JSON.stringify({ model_call_id: callId }))] : []),
+             ...(v51 ? [env.DB.prepare(`INSERT INTO state_events
+               (id,session_id,turn_id,revision,kind,at,details_json) VALUES (?,?,?,?,?,?,?)`)
+               .bind(crypto.randomUUID(), id, turnId, revision, 'bridge_diagnostic', assistantAt,
+                 JSON.stringify({ model_call_id: callId, behavior_version: behavior.version,
+                   validation_contract: 'meal-package-v5.1', retry_count: retryCount,
+                   repair_count: bridgeContinuationCount, attempts: bridgeDiagnostics }))] : []),
            ]);
           const wasAccepted = write[0].meta.changes === 1;
           const proposalStale = wasAccepted && Boolean(planJson || cookingJson) && write[5].meta.changes !== 1;
@@ -1568,15 +1642,34 @@ async function streamTurn(request, env, ctx, id) {
         } catch (error) {
           const code = error instanceof Error && /^[A-Z_0-9]+$/.test(error.message)
             ? error.message : 'MODEL_ERROR';
+          const failureUsage = completed?.usage ?? incompleteResponse?.usage ?? {};
+          const inputTokens = Number.isInteger(failureUsage.input_tokens) ? failureUsage.input_tokens : null;
+          const outputTokens = Number.isInteger(failureUsage.output_tokens) ? failureUsage.output_tokens : null;
+          const cachedTokens = Number.isInteger(failureUsage.input_tokens_details?.cached_tokens)
+            ? failureUsage.input_tokens_details.cached_tokens : 0;
+          const reasoningTokens = Number.isInteger(failureUsage.output_tokens_details?.reasoning_tokens)
+            ? failureUsage.output_tokens_details.reasoning_tokens : 0;
+          const cost = inputTokens !== null && outputTokens !== null
+            ? estimateUsd(completed?.model ?? model, inputTokens, cachedTokens, outputTokens) : null;
           await env.DB.batch([
             env.DB.prepare(`UPDATE model_calls SET completed_at=?,status='error',first_text_ms=?,
-            first_useful_ms=?,first_useful_excerpt=?,full_ms=?,retry_count=?,error_code=?,assistant_text=? WHERE id=?`)
-              .bind(now(), firstTextMs, firstUsefulMs, firstUsefulExcerpt, Math.round(performance.now() - started), retryCount, code, text, callId),
+            first_useful_ms=?,first_useful_excerpt=?,full_ms=?,retry_count=?,error_code=?,assistant_text=?,
+            input_tokens=?,cached_input_tokens=?,output_tokens=?,reasoning_tokens=?,estimated_usd=? WHERE id=?`)
+              .bind(now(), firstTextMs, firstUsefulMs, firstUsefulExcerpt,
+                Math.round(performance.now() - started), retryCount + bridgeContinuationCount,
+                code, text, v51 ? inputTokens : null, v51 ? cachedTokens : null,
+                v51 ? outputTokens : null, v51 ? reasoningTokens : null, v51 ? cost : null, callId),
             env.DB.prepare("UPDATE turn_operations SET status='error',updated_at=? WHERE user_turn_id=? AND current_call_id=?")
               .bind(now(), turnId, callId),
             env.DB.prepare('INSERT INTO state_events (id,session_id,turn_id,revision,kind,at,details_json) VALUES (?,?,?,?,?,?,?)')
               .bind(crypto.randomUUID(), id, turnId, revision, 'model_call_failed', now(),
                 JSON.stringify({ model_call_id: callId, code })),
+            ...(v51 ? [env.DB.prepare(`INSERT INTO state_events
+              (id,session_id,turn_id,revision,kind,at,details_json) VALUES (?,?,?,?,?,?,?)`)
+              .bind(crypto.randomUUID(), id, turnId, revision, 'bridge_diagnostic', now(),
+                JSON.stringify({ model_call_id: callId, behavior_version: behavior.version,
+                  validation_contract: 'meal-package-v5.1', retry_count: retryCount,
+                  repair_count: bridgeContinuationCount, attempts: bridgeDiagnostics }))] : []),
           ]);
           sendSse(controller, { type: 'error', code });
         } finally {

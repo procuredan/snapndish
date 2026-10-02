@@ -6,8 +6,9 @@ import { Script } from 'node:vm';
 import worker from '../live-lab/worker.mjs';
 import closedStage1b from '../stage1b/closed.mjs';
 import { page } from '../live-lab/ui.mjs';
-import { MEAL_PACKAGE_TOOL, RETAIL_MEAL_PACKAGE_TOOL, COOKING_QUALITY_MEAL_PACKAGE_TOOL, normalizeMealPlan } from '../live-lab/meal-plan.mjs';
-import { COOKING_PROGRESS_TOOL_V2 } from '../live-lab/cooking-progress.mjs';
+import { MEAL_PACKAGE_TOOL, RETAIL_MEAL_PACKAGE_TOOL, COOKING_QUALITY_MEAL_PACKAGE_TOOL,
+  COOKING_QUALITY_V51_MEAL_PACKAGE_TOOL, normalizeMealPlan } from '../live-lab/meal-plan.mjs';
+import { COOKING_PROGRESS_TOOL_V2, COOKING_PROGRESS_TOOL_V51 } from '../live-lab/cooking-progress.mjs';
 import { safeRealtimeMessage } from '../live-lab/realtime-diagnostics.mjs';
 import { instructionsForCookingContent, instructionsForCookingVoice, instructionsForRetailShopping, instructionsForCookingQuality } from '../src/config.ts';
 
@@ -536,6 +537,229 @@ test('an exhausted V5 response records a bounded incomplete reason without accep
     const saved = await (await worker.fetch(req(`/api/sessions/${visitor.id}`, 'GET', undefined,
       visitor.cookie), e, context())).json();
     assert.equal(saved.meal_plan, null);
+  } finally { globalThis.fetch = original; }
+});
+
+test('V5.1 repair receives the exact rejection field and accepts one current corrected package', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-meal-package-v5.1';
+  const visitor = await createVisitorSession(e, 'Four people. A skillet and rice cooker.');
+  const plan = JSON.parse(fs.readFileSync(new URL('./fixtures/v5-1-serving-revision.json', import.meta.url)));
+  const invalid = structuredClone(plan);
+  invalid.full_plan[2].directions = 'A'.repeat(2001);
+  const original = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (_url, init) => {
+    const input = JSON.parse(init.body);
+    assert.equal(input.max_output_tokens, 4096);
+    assert.equal(input.tools[0].strict, true);
+    assert.deepEqual(input.tools[0], COOKING_QUALITY_V51_MEAL_PACKAGE_TOOL);
+    assert.deepEqual(input.tools[1], COOKING_PROGRESS_TOOL_V51);
+    assert.match(input.instructions, /shorter is not the goal/i);
+    if (calls++ === 0) return providerStream('', [{ type: 'function_call', call_id: 'call_bad',
+      name: 'publish_meal_plan', arguments: JSON.stringify(invalid) }]);
+    const feedback = JSON.parse(input.input.find(x => x.type === 'function_call_output').output);
+    assert.deepEqual(feedback, { accepted: false, reason: 'INVALID_PLAN_PROPOSAL',
+      validation: { code: 'PLAN_DIRECTIONS_LENGTH', field: 'full_plan[2].directions',
+        actual: 2001, max: 2000 } });
+    return new Response(JSON.stringify({ id: 'resp_repaired', model: 'gpt-6-astra', status: 'completed',
+      output: [{ type: 'function_call', name: 'publish_meal_plan', arguments: JSON.stringify(plan) }],
+      usage: { input_tokens: 50, output_tokens: 40 } }), { status: 200 });
+  };
+  try {
+    const answer = await worker.fetch(req(`/api/sessions/${visitor.id}/turns`, 'POST',
+      { text: 'Make this whole shawarma meal for four.', turnId: crypto.randomUUID(),
+        expectedRevision: 0 }, visitor.cookie), e, context());
+    assert.match(await answer.text(), /"type":"complete"/);
+    const saved = await (await worker.fetch(req(`/api/sessions/${visitor.id}`, 'GET', undefined,
+      visitor.cookie), e, context())).json();
+    assert.equal(saved.meal_plan.servings, 4);
+    assert.deepEqual(saved.meal_plan.full_plan, plan.full_plan);
+    assert.equal(calls, 2, 'one primary and one repair');
+    const recorded = e.DB.raw.prepare('SELECT status,input_tokens,output_tokens,retry_count FROM model_calls').get();
+    assert.deepEqual({ ...recorded }, { status: 'accepted', input_tokens: 150, output_tokens: 120,
+      retry_count: 1 });
+    const diagnostic = JSON.parse(e.DB.raw.prepare("SELECT details_json FROM state_events WHERE kind='bridge_diagnostic'").get().details_json);
+    assert.equal(diagnostic.attempts[0].validation.field, 'full_plan[2].directions');
+    assert.equal(diagnostic.attempts[1].status, 'completed');
+    assert.doesNotMatch(JSON.stringify(diagnostic), /Boneless chicken|sk-proj|Authorization/);
+
+    globalThis.fetch = async (url, init) => {
+      assert.equal(url, 'https://api.openai.com/v1/responses');
+      assert.equal(JSON.parse(init.body).tools[1].strict, true);
+      return providerStream('Keep the rice going and prepare the salad while it cooks.',
+        [{ type: 'function_call', name: 'update_cooking_progress', arguments: JSON.stringify({
+          current_action: 'Prepare the cucumber salad while the rice cooks.',
+          full_plan: plan.full_plan, remaining_components: null,
+          customer_report: null, equipment_change: null }) }]);
+    };
+    const echo = await worker.fetch(req(`/api/sessions/${visitor.id}/turns`, 'POST',
+      { text: 'What should I work on now?', turnId: crypto.randomUUID(),
+        expectedRevision: saved.revision }, visitor.cookie), e, context());
+    assert.match(await echo.text(), /"type":"complete"/);
+    const afterEcho = await (await worker.fetch(req(`/api/sessions/${visitor.id}`, 'GET', undefined,
+      visitor.cookie), e, context())).json();
+    assert.deepEqual(afterEcho.meal_plan.full_plan, plan.full_plan);
+    assert.deepEqual(afterEcho.cooking_progress.full_plan, plan.full_plan);
+
+    globalThis.fetch = async (url, init) => {
+      assert.equal(url, 'https://api.openai.com/v1/realtime/calls');
+      const setup = JSON.parse(init.body.get('session'));
+      assert.ok(setup.tools.every(tool => !Object.hasOwn(tool, 'strict')));
+      assert.deepEqual(setup.tools[0].parameters,
+        COOKING_QUALITY_V51_MEAL_PACKAGE_TOOL.parameters);
+      assert.equal(setup.model, 'gpt-realtime-2.1');
+      return new Response('v=0\r\nanswer', { status: 201 });
+    };
+    const voice = await worker.fetch(req(`/api/sessions/${visitor.id}/voice/start`, 'POST',
+      { sdp: 'v=0\r\noffer', expectedRevision: afterEcho.revision }, visitor.cookie), e, context());
+    assert.equal(voice.status, 201);
+    assert.equal((await voice.json()).behaviorVersion, 'stage1b-meal-package-v5.1+voice-bridge-v2');
+  } finally { globalThis.fetch = original; }
+});
+
+test('V5.1 bounded repair failure keeps the last accepted package and available usage', async () => {
+  for (const variant of ['http', 'bad_json', 'exhausted', 'incomplete', 'invalid', 'empty', 'malformed']) {
+    const e = env();
+    e.STAGE1B_ENABLED = 'true';
+    e.BEHAVIOR_VERSION = 'stage1b-meal-package-v5.1';
+    const visitor = await createVisitorSession(e, 'Two people.');
+    e.DB.raw.prepare('UPDATE sessions SET meal_revision=1,meal_plan_json=? WHERE id=?')
+      .run(JSON.stringify({ meal: 'Previous dinner', servings: 2, sections: [],
+        full_plan: [{ title: 'Cook', directions: 'Cook the previous dinner.' }],
+        current_action: 'Keep cooking.' }), visitor.id);
+    const invalid = { meal: 'Replacement', servings: 4,
+      sections: [{ section: 'Produce', items: [{ name: 'Tomato', quantity: '4',
+        required_quantity: '4 tomatoes', normalized_quantity: { amount: 4, unit: 'each' },
+        retail_total: { amount: 4, unit: 'each' }, have_status: 'need' }] }],
+      full_plan: [{ title: 'Cook', directions: 'A'.repeat(2001) }], current_action: 'Cook.' };
+    const original = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => {
+      if (calls++ === 0) return providerStream('', [{ type: 'function_call', call_id: 'call_bad',
+        name: 'publish_meal_plan', arguments: JSON.stringify(invalid) }]);
+      if (variant === 'http') return new Response('private content', { status: 503 });
+      if (variant === 'bad_json') return new Response('private content', { status: 200 });
+      const body = variant === 'exhausted' ? { status: 'incomplete',
+        incomplete_details: { reason: 'max_output_tokens' }, usage: { input_tokens: 50, output_tokens: 20 } }
+        : variant === 'incomplete' ? { status: 'incomplete',
+          incomplete_details: { reason: 'other-private-reason' }, usage: { input_tokens: 50, output_tokens: 20 } }
+        : variant === 'invalid' ? { status: 'completed', output: [{ type: 'function_call',
+          name: 'publish_meal_plan', arguments: JSON.stringify(invalid) }],
+          usage: { input_tokens: 50, output_tokens: 20 } }
+        : variant === 'malformed' ? { status: 'completed', output: 'private content',
+          usage: { input_tokens: 50, output_tokens: 20 } }
+        : { status: 'completed', output: [], usage: { input_tokens: 50, output_tokens: 20 } };
+      return new Response(JSON.stringify(body), { status: 200 });
+    };
+    try {
+      const answer = await worker.fetch(req(`/api/sessions/${visitor.id}/turns`, 'POST',
+        { text: 'Change dinner to four servings.', turnId: crypto.randomUUID(),
+          expectedRevision: 0 }, visitor.cookie), e, context());
+      const body = await answer.text();
+      assert.match(body, /"type":"error"/, variant);
+      const saved = await (await worker.fetch(req(`/api/sessions/${visitor.id}`, 'GET', undefined,
+        visitor.cookie), e, context())).json();
+      assert.equal(saved.meal_plan.meal, 'Previous dinner', variant);
+      assert.equal(calls, 2, variant);
+      const call = e.DB.raw.prepare('SELECT status,error_code,input_tokens,output_tokens,estimated_usd,retry_count FROM model_calls').get();
+      assert.equal(call.status, 'error', variant);
+      assert.equal(call.retry_count, 1, variant);
+      assert.equal(call.input_tokens, variant === 'http' || variant === 'bad_json' ? 100 : 150, variant);
+      assert.ok(call.estimated_usd > 0, variant);
+      if (variant === 'exhausted') assert.equal(call.error_code,
+        'BRIDGE_RECOVERY_INCOMPLETE_MAX_OUTPUT_TOKENS');
+      const diagnostic = e.DB.raw.prepare("SELECT details_json FROM state_events WHERE kind='bridge_diagnostic'").get().details_json;
+      assert.doesNotMatch(diagnostic, /private content|private-reason|A{30}/);
+    } finally { globalThis.fetch = original; }
+  }
+});
+
+test('V5.1 two-to-four revision keeps explicit Shopping edits and reported progress', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-meal-package-v5.1';
+  const visitor = await createVisitorSession(e, 'Two people, skillet and rice cooker.');
+  const four = JSON.parse(fs.readFileSync(new URL('./fixtures/v5-1-serving-revision.json', import.meta.url)));
+  const two = structuredClone(four);
+  two.servings = 2;
+  two.full_plan = [{ title: 'Rice', directions: 'Cook 3/4 cup rice.' },
+    { title: 'Chicken and plate', directions: 'Sear 1 lb chicken and serve with salad.' }];
+  two.current_action = 'Start the rice.';
+  const items2 = two.sections.flatMap(section => section.items);
+  const rice2 = items2.find(item => item.name === 'Rice');
+  rice2.required_quantity = '¾ cup dry (about 140 g)';
+  rice2.normalized_quantity.amount = 140;
+  const chicken2 = items2.find(item => item.name === 'Boneless chicken thighs');
+  chicken2.quantity = '1 lb';
+  chicken2.required_quantity = '1 lb';
+  chicken2.normalized_quantity.amount = 1;
+  chicken2.retail_total.amount = 1;
+  const original = globalThis.fetch;
+  let modelCalls = 0;
+  globalThis.fetch = async () => {
+    modelCalls++;
+    if (modelCalls === 1) return providerStream('Here is the meal for two.',
+      [{ type: 'function_call', name: 'publish_meal_plan', arguments: JSON.stringify(two) }]);
+    if (modelCalls === 2) return providerStream('Rice is going. Prepare the salad while it cooks.',
+      [{ type: 'function_call', name: 'update_cooking_progress', arguments: JSON.stringify({
+        current_action: 'Prepare the salad while rice cooks.', full_plan: null,
+        remaining_components: null,
+        customer_report: { quote: 'Rice is going.', understood_as: 'Rice started' },
+        equipment_change: null }) }]);
+    if (modelCalls === 3) return providerStream('I adjusted the whole meal for four.',
+      [{ type: 'function_call', name: 'publish_meal_plan', arguments: JSON.stringify(four) }]);
+    if (modelCalls === 4) return providerStream('',
+      [{ type: 'function_call', call_id: 'changed_plan', name: 'update_cooking_progress',
+        arguments: JSON.stringify({ current_action: 'Use a changed recipe.',
+          full_plan: four.full_plan.map((section, i) => i === 0
+            ? { ...section, directions: section.directions + ' Changed.' } : section),
+          remaining_components: null, customer_report: null, equipment_change: null }) }]);
+    if (modelCalls === 5) return new Response(JSON.stringify({ status: 'completed',
+      output: [{ type: 'message', content: [{ type: 'output_text',
+        text: 'That changed recipe was not saved.' }] }],
+      usage: { input_tokens: 40, output_tokens: 20 } }), { status: 200 });
+    assert.fail('no extra model call');
+  };
+  async function send(text) {
+    const revision = e.DB.raw.prepare('SELECT revision FROM sessions WHERE id=?').get(visitor.id).revision;
+    const response = await worker.fetch(req(`/api/sessions/${visitor.id}/turns`, 'POST',
+      { text, turnId: crypto.randomUUID(), expectedRevision: revision }, visitor.cookie), e, context());
+    assert.match(await response.text(), /"type":"complete"/);
+    return (await (await worker.fetch(req(`/api/sessions/${visitor.id}`, 'GET', undefined,
+      visitor.cookie), e, context())).json());
+  }
+  try {
+    let saved = await send('Chicken shawarma bowls for two.');
+    const priorRice = saved.meal_plan.sections.flatMap(x => x.items).find(x => x.name === 'Rice');
+    const priorGarlic = saved.meal_plan.sections.flatMap(x => x.items).find(x => x.name === 'Garlic');
+    for (const [id, checked] of [[priorRice.id, false], [priorGarlic.id, true]]) {
+      const updated = await worker.fetch(req(`/api/sessions/${visitor.id}/shopping/${id}`, 'PATCH',
+        { checked, expectedShoppingRevision: saved.shopping_revision }, visitor.cookie), e, context());
+      assert.equal(updated.status, 200);
+      saved = await (await worker.fetch(req(`/api/sessions/${visitor.id}`, 'GET', undefined,
+        visitor.cookie), e, context())).json();
+    }
+    saved = await send('Rice is going.');
+    assert.equal(saved.cooking_progress.reports.length, 1);
+    saved = await send('Make the same complete meal for four.');
+    assert.equal(saved.meal_plan.servings, 4);
+    assert.deepEqual(saved.meal_plan.full_plan, four.full_plan);
+    const revised = saved.meal_plan.sections.flatMap(x => x.items);
+    const rice = revised.find(x => x.name === 'Rice');
+    const garlic = revised.find(x => x.name === 'Garlic');
+    assert.equal(rice.checked, false);
+    assert.equal(rice.quantity_changed, true);
+    assert.equal(garlic.id, priorGarlic.id);
+    assert.equal(garlic.checked, true);
+    assert.equal(saved.cooking_progress.reports[0].meal_revision, 1);
+    assert.equal(saved.cooking_progress.reports[0].understood_as, 'Rice started');
+    const previousRevision = saved.meal_revision;
+    saved = await send('Can I change the accepted plan without revising the meal?');
+    assert.equal(saved.meal_revision, previousRevision);
+    assert.deepEqual(saved.meal_plan.full_plan, four.full_plan);
+    assert.equal(modelCalls, 5);
   } finally { globalThis.fetch = original; }
 });
 

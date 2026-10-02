@@ -9,6 +9,7 @@ export const COOKING_CONTENT_BEHAVIOR_VERSION = "stage1b-meal-package-v2";
 export const COOKING_VOICE_BEHAVIOR_VERSION = "stage1b-meal-package-v3";
 export const RETAIL_SHOPPING_BEHAVIOR_VERSION = "stage1b-meal-package-v4";
 export const COOKING_QUALITY_BEHAVIOR_VERSION = "stage1b-meal-package-v5";
+export const COOKING_QUALITY_V51_BEHAVIOR_VERSION = "stage1b-meal-package-v5.1";
 export const CONTEXT_VERSION = "stage1a-fixtures-v1";
 export const SCENARIO_VERSION = "stage1a-scenarios-v1";
 

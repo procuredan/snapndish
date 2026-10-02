@@ -40,6 +40,14 @@ export const COOKING_PROGRESS_TOOL_V2 = {
   },
 };
 
+export const COOKING_PROGRESS_TOOL_V51 = structuredClone(COOKING_PROGRESS_TOOL_V2);
+COOKING_PROGRESS_TOOL_V51.parameters.properties.full_plan.description +=
+  ' V5.1 application acceptance maxima for an exact accepted-plan echo: 1–14 sections, 2,000 characters per directions and 10,000 serialized characters for the complete plan. A changed plan requires publish_meal_plan.';
+COOKING_PROGRESS_TOOL_V51.parameters.properties.full_plan.items.properties.title.description =
+  'Application acceptance maximum: 80 characters.';
+COOKING_PROGRESS_TOOL_V51.parameters.properties.current_action.description +=
+  ' Application acceptance maximum: 1,200 characters.';
+
 function supportedQuote(quote, latestUserText) {
   return typeof quote === 'string' && quote.trim().length > 0 && quote.length <= 300 &&
     latestUserText.toLocaleLowerCase().includes(quote.trim().toLocaleLowerCase());
@@ -49,7 +57,8 @@ function readinessOnly(quote) {
   return /^(?:let['’]?s cook|ready to cook|let['’]?s start|start cooking|begin cooking)[.!]?$/i.test(quote.trim());
 }
 
-export function normalizeCookingProposal(raw, latestUserText, requireFullPlan = false) {
+export function normalizeCookingProposal(raw, latestUserText, requireFullPlan = false,
+  { maxDirectionsLength = 1400, maxPlanLength = 7000, minSections = 2, maxSections = 10 } = {}) {
   let value;
   try { value = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return null; }
   if (!value || typeof value !== 'object' || typeof value.current_action !== 'string' ||
@@ -62,11 +71,11 @@ export function normalizeCookingProposal(raw, latestUserText, requireFullPlan = 
   }
   let fullPlan = null;
   if (value.full_plan !== undefined && value.full_plan !== null) {
-    if (!Array.isArray(value.full_plan) || value.full_plan.length < 2 || value.full_plan.length > 10 ||
+    if (!Array.isArray(value.full_plan) || value.full_plan.length < minSections || value.full_plan.length > maxSections ||
       value.full_plan.some(x => !x || typeof x.title !== 'string' || !x.title.trim() || x.title.length > 80 ||
-        typeof x.directions !== 'string' || !x.directions.trim() || x.directions.length > 1400)) return null;
+        typeof x.directions !== 'string' || !x.directions.trim() || x.directions.length > maxDirectionsLength)) return null;
     fullPlan = value.full_plan.map(x => ({ title: x.title.trim(), directions: x.directions.trim() }));
-    if (JSON.stringify(fullPlan).length > 7000) return null;
+    if (JSON.stringify(fullPlan).length > maxPlanLength) return null;
   }
   if (requireFullPlan && !fullPlan) return null;
   const ignoredFields = [];
@@ -89,7 +98,7 @@ export function normalizeCookingProposal(raw, latestUserText, requireFullPlan = 
     customer_report: report, equipment_change: equipment, ignored_fields: ignoredFields };
 }
 
-export function cookingFromOutput(output, latestUserText, requireFullPlan = false) {
+export function cookingFromOutput(output, latestUserText, requireFullPlan = false, options = {}) {
   const calls = (output || []).filter(item => item.type === 'function_call' && item.name === COOKING_PROGRESS_TOOL.name);
   if (calls.length !== 1) return { cooking: null, reason: calls.length ? 'MULTIPLE_COOKING_CALLS' : null, calls };
   let candidate;
@@ -101,7 +110,7 @@ export function cookingFromOutput(output, latestUserText, requireFullPlan = fals
   if (candidate?.remaining_components != null && !Array.isArray(candidate.remaining_components))
     shapeErrors.push('remaining_components must be an array of component names');
   if (shapeErrors.length) return { cooking: null, reason: shapeErrors.join('; '), calls };
-  const cooking = normalizeCookingProposal(calls[0].arguments, latestUserText, requireFullPlan);
+  const cooking = normalizeCookingProposal(calls[0].arguments, latestUserText, requireFullPlan, options);
   return { cooking, reason: cooking ? null : requireFullPlan && !candidate?.full_plan
     ? 'full_plan is required when cooking first starts' : 'INVALID_COOKING_PROPOSAL', calls };
 }

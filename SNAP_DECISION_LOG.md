@@ -223,6 +223,14 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 - **Excluded alternative:** Recipe database, taxonomy, second planner/critic, retail redesign, output-limit change without evidence, commercial memory, production or Stage 1A modification.
 - **Supersedes:** SNDISH-021 and SNDISH-022 only where their accumulated cooking-writing brevity instructions conflict with this V5 quality target. Their safety, component completeness, point-of-use measurement, authority and release safeguards remain.
 
+### SNDISH-025 — V5.1 bounded cooking-section acceptance and repair
+
+- **Date / owner:** 2026-10-02; Snap n Dish product owner, approving Astra Ultra's V5 staging-failure review and final Engineering GO.
+- **Decision:** Preserve V5's substantive culinary behavior and Retail Shopping V4. Add a separately versioned `stage1b-meal-package-v5.1` candidate with a 2,000-character maximum per cooking section. Keep the 10,000-character complete-plan bound, existing section/title/Now bounds, model, effort and output-token ceiling. Historical versions keep their prior acceptance limits. Make the existing single same-model repair attempt receive bounded field-level validation feedback, reject incomplete provider responses, and retain sanitized attempt diagnostics and available failed-call usage/cost. Do not add a repair loop or a new synchronous model call.
+- **Reason:** A preserved synthetic two-to-four serving revision contained a coherent 1,494-character cooking section, which exceeded the inherited 1,400-character validator. V5 staging correctly rejected the package and rolled back to V4. The first `BRIDGE_RECOVERY_EMPTY` cause was not determined from historical telemetry; the retry's known section-length failure does not establish the first cause. Normal package latency remains a separate measured issue.
+- **Scope / proof:** Keep one conditional meal-package authority and currentness gates. Preserve Retail Shopping, explicit checklist edits, reported physical progress, text/voice continuity and prior package on failure. Run local and CI regressions, focused live model comparisons, and rendered plus real microphone checks only on isolated Stage 1B staging. Fresh unscripted owner use is the V5.1 culinary quality gate. No D1 migration, Stage 1A change or production deployment is authorized.
+- **Supersedes:** SNDISH-024 only for V5.1's versioned acceptance and repair diagnostics; V5 itself remains reproducible.
+
 ## Open decisions — no authority may be invented
 
 1. Stage 1A quality result and owner benchmark/human review; the current prototype tests are not that decision.
