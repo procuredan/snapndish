@@ -83,7 +83,7 @@ For a staging behavior regression, roll back only this Worker: `wrangler rollbac
 
 ## Cooking Quality V5 (SNDISH-024)
 
-This release selects `stage1b-meal-package-v5` only on the isolated Stage 1B Worker. It replaces the accumulated cooking-writing prompt with one culinary-decision contract and changes only the new tool clone's `full_plan` description. Retail Shopping V4, package/state shape, model configuration, voice bridge and other product behavior remain unchanged. No migration is expected. See [V5 work record](COOKING_QUALITY_V5_WORK_RECORD.md) for comparison and regression scope.
+This release selects `stage1b-meal-package-v5` only on the isolated Stage 1B Worker. It replaces the accumulated cooking-writing prompt with one culinary-decision contract and changes only the new tool clone's `full_plan` description. A bounded model-call error code distinguishes a provider-reported output-token exhaustion. Retail Shopping V4, package/state shape, model configuration, voice bridge and other product behavior remain unchanged. No migration is expected. See [V5 work record](COOKING_QUALITY_V5_WORK_RECORD.md) for comparison and regression scope.
 
 Before release, run complete local and real-browser checks, fixed and held-out matched V4/V5/foundation comparisons, verification-only GitHub CI and a staging bundle dry run. Reverify the active Stage 1B Worker, account, D1/R2 bindings, Access protection, migration ledger and a D1 Time Travel recovery point. The recorded V4 Worker is `61f1eee7-87ee-49e0-b183-71ac7d7e7b6f`; confirm it remains the active and rollback-eligible version rather than trusting this record alone.
 

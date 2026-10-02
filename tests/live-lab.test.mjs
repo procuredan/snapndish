@@ -512,6 +512,33 @@ test('cooking quality v5 replaces compression guidance while retaining retail ac
   } finally { globalThis.fetch = original; }
 });
 
+test('an exhausted V5 response records a bounded incomplete reason without accepting a package', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-meal-package-v5';
+  const visitor = await createVisitorSession(e, 'Two diners.');
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => new Response(new ReadableStream({ start(controller) {
+    controller.enqueue(new TextEncoder().encode('data: ' + JSON.stringify({ type: 'response.incomplete',
+      response: { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens',
+        private_customer_content: 'do-not-record-private-content' } } }) + '\n\n'));
+    controller.close();
+  } }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+  try {
+    const result = await worker.fetch(req(`/api/sessions/${visitor.id}/turns`, 'POST',
+      { text: 'The chicken dinner for two, please.', turnId: crypto.randomUUID(),
+        expectedRevision: 0 }, visitor.cookie), e, context());
+    assert.match(await result.text(), /INCOMPLETE_MAX_OUTPUT_TOKENS/);
+    const call = e.DB.raw.prepare('SELECT status,error_code,assistant_text FROM model_calls').get();
+    assert.equal(call.status, 'error');
+    assert.equal(call.error_code, 'INCOMPLETE_MAX_OUTPUT_TOKENS');
+    assert.doesNotMatch(JSON.stringify(call), /do-not-record-private-content/);
+    const saved = await (await worker.fetch(req(`/api/sessions/${visitor.id}`, 'GET', undefined,
+      visitor.cookie), e, context())).json();
+    assert.equal(saved.meal_plan, null);
+  } finally { globalThis.fetch = original; }
+});
+
 test('a revised package applies new ingredient facts but preserves manual Shopping choices', () => {
   const prior = normalizeMealPlan({ meal: 'Dinner', servings: 2,
     sections: [{ section: 'Pantry', items: [

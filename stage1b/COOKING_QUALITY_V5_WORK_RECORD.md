@@ -6,7 +6,7 @@
 
 Source baseline `d16ab8ffa8947c00e5839d13e9f9c5ec2003c228` runs retail Shopping V4 on the isolated Stage 1B Worker. One primary streamed culinary response proposes a complete meal, consolidated Shopping, retail estimates and a free-form `full_plan`. The Worker validates and conditionally accepts the package against current session/meal revisions; D1 owns accepted state. The browser renders the accepted strings directly. Text and Realtime voice share package semantics and accepted state. The last recorded V4 staging Worker is `61f1eee7-87ee-49e0-b183-71ac7d7e7b6f`; verify the actual active and rollback-eligible version immediately before deployment.
 
-V5 replaces accumulated cooking-writing instructions with a coherent cooking-decision contract. It preserves the discovery instruction text, all V4 retail Shopping wording and fields, the accepted schema, validator, renderer, model/effort/output cap, Realtime settings and bridge. The V5 tool clone changes only the `full_plan` description. V1–V4 remain callable. No D1 migration or new synchronous model call is planned.
+V5 replaces accumulated cooking-writing instructions with a coherent cooking-decision contract. It preserves the discovery instruction text, all V4 retail Shopping wording and fields, the accepted schema, validator, renderer, model/effort/output cap, Realtime settings and bridge. The V5 tool clone changes only the `full_plan` description. A narrowly bounded diagnostic records `INCOMPLETE_MAX_OUTPUT_TOKENS` in the existing model-call error code when the provider explicitly reports that reason; it does not log provider body or change the customer response path. V1–V4 remain callable. No D1 migration or new synchronous model call is planned.
 
 ## Regression surface and proof
 

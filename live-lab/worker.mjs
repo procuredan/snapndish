@@ -1273,6 +1273,7 @@ async function streamTurn(request, env, ctx, id) {
       const task = (async () => {
         const started = performance.now();
         let text = '', firstTextMs = null, firstUsefulMs = null, firstUsefulExcerpt = null, retryCount = 0, completed = null;
+        let incompleteReason = null;
         let bridgeContinuationCount = 0, bridgeRejectedReason = null, bridgeRejectedCalls = [];
         try {
           sendSse(controller, { type: 'accepted', turnId, revision });
@@ -1311,6 +1312,9 @@ async function streamTurn(request, env, ctx, id) {
               }
               sendSse(controller, { type: 'delta', text: e.delta });
             } else if (e.type === 'response.completed') completed = e.response;
+            else if (e.type === 'response.incomplete')
+              incompleteReason = e.response?.incomplete_details?.reason === 'max_output_tokens'
+                ? 'max_output_tokens' : 'other';
             else if (e.type === 'error' || e.type === 'response.failed') throw new Error('PROVIDER_STREAM_FAILED');
           }
           while (true) {
@@ -1322,7 +1326,8 @@ async function streamTurn(request, env, ctx, id) {
             while ((i = buffer.indexOf('\n\n')) >= 0) { frame(buffer.slice(0, i)); buffer = buffer.slice(i + 2); }
           }
            if (buffer.trim()) frame(buffer);
-           if (!completed) throw new Error('INCOMPLETE_STREAM');
+           if (!completed) throw new Error(incompleteReason === 'max_output_tokens'
+             ? 'INCOMPLETE_MAX_OUTPUT_TOKENS' : 'INCOMPLETE_STREAM');
            let proposed = isNextFlow(behavior.version)
              ? mealProposal(completed.output, session, behavior.version) : { plan: null, reason: null, calls: [] };
            let cookingProposal = isCookingVersion(behavior.version)
