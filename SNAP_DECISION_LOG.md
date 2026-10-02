@@ -206,6 +206,14 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 - **Excluded alternative:** Recipe database, prose template, extra model call, critic, classifier, taxonomy, voice rewrite, or a fixed example recipe.
 - **Supersedes:** SNDISH-021 only where it suggests a separate chef's coordination note. All completeness, point-of-use quantity, safety, authority and release boundaries remain.
 
+### SNDISH-023 — Retail-aware Shopping quantities on isolated Stage 1B staging
+
+- **Date / owner:** 2026-10-01; Snap n Dish product owner, via the Retail-Aware Shopping Quantities brief.
+- **Decision:** Keep the accepted complete meal and point-of-use cooking quantities. For each selected serving count, consolidate an ingredient's total culinary requirement before proposing a practical retail purchase display. Retain the consolidated required quantity, an arithmetic-ready normalized amount, and the recommended retail total in the accepted meal JSON; the backend derives remaining purchase need from the existing checked/unchecked state. Retail recommendations may use common package, count or weight knowledge but are estimates, never verified store inventory. Recalculate after a meal or serving revision. Checked still means enough on hand; preserve visible assumed-staple and customer-edit behavior. Version this Shopping-only proposal change as `stage1b-meal-package-v4` and retain V3 unchanged for rollback.
+- **Reason:** Large-group owner use showed that cooking amounts such as cups of yogurt are correct at the stove or assembly table but impractical as a grocery purchase instruction.
+- **Scope / proof:** No separate model call, SKU database, inventory service, recipe engine, D1 migration, UI-flow change, culinary prompt rewrite or Talk It architecture change. Compare fixed and held-out small/family/large-group packages plus discovery and recovery controls; verify consolidation, safe rounding, point-of-use amounts, checklist revision, local/CI tests and a rendered isolated staging journey. Owner retail-quality judgment remains the broader promotion gate. Stage 1A and production remain unchanged.
+- **Supersedes:** None. SNDISH-020 through SNDISH-022 continue to govern meal acceptance and cooking voice; only the Shopping quantity representation is extended.
+
 ## Open decisions — no authority may be invented
 
 1. Stage 1A quality result and owner benchmark/human review; the current prototype tests are not that decision.

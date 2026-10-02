@@ -7,6 +7,7 @@ export const COOKING_PLAN_BEHAVIOR_VERSION = "stage1b-cooking-v2";
 export const MEAL_PACKAGE_BEHAVIOR_VERSION = "stage1b-meal-package-v1";
 export const COOKING_CONTENT_BEHAVIOR_VERSION = "stage1b-meal-package-v2";
 export const COOKING_VOICE_BEHAVIOR_VERSION = "stage1b-meal-package-v3";
+export const RETAIL_SHOPPING_BEHAVIOR_VERSION = "stage1b-meal-package-v4";
 export const CONTEXT_VERSION = "stage1a-fixtures-v1";
 export const SCENARIO_VERSION = "stage1a-scenarios-v1";
 
@@ -113,6 +114,11 @@ export function instructionsForCookingVoice(context: string, hasAcceptedMeal = f
   return cookingContentInstructions(context, hasAcceptedMeal, cookingActive,
     "Put timing and coordination where the cook needs them in the relevant section, never in a separate chef's note, tip or coordination section.") +
     `\n\nCooking-plan writing for the complete visual plan only: write as a capable cook guiding this particular meal, not as fields converted into recipe prose. Make each section easy to glance at mid-cook: short, natural action lines instead of dense, comma-heavy paragraphs. When several measured ingredients go into one bowl or pan, compact ingredient bullets can be clearer than burying every amount in a long sentence; do not force bullets everywhere. At the point where it helps, give a brief meal-specific reason or sensory cue for a consequential choice: what to start early, when to wait for browning, what texture or contrast to protect, or what to taste before adjusting. Do not add a reason to every action or pad the plan with generic enthusiasm. Put each quantity where it is used; include the heat, time, doneness and safety facts needed to cook confidently. Keep every defining component through final assembly. Finish with a concise serving action; add a closing thought only if it explains this meal. Direct cooking questions and recovery still receive direct help. This writing direction does not change discovery, Shopping, or the spoken transition.`;
+}
+
+export function instructionsForRetailShopping(context: string, hasAcceptedMeal = false, cookingActive = false): string {
+  return instructionsForCookingVoice(context, hasAcceptedMeal, cookingActive) +
+    `\n\nRetail-aware Shopping refinement only. Preserve the chosen meal, discovery pacing, complete measured cooking plan, and spoken transition. For the selected servings, first total each ingredient across all meal components and make one consolidated Shopping item for it. Only then translate its total culinary requirement into a practical amount to buy. In each Shopping item, required_quantity is the amount the meal actually uses; normalized_quantity is that required amount as a numeric value and useful arithmetic unit; quantity is the natural grocery-store purchase display; retail_total is the total that suggested purchase provides, expressed in exactly the normalized unit. retail_total must meet or slightly exceed normalized_quantity. Use common packages, counts or weights when they help; keep natural bunches, heads or individual items when that is how people buy them. Round up enough to avoid running short without excessive overbuying. Package recommendations are estimates, not claims about a particular store's inventory. Keep the cooking-section amounts at point of use; do not substitute package sizes into cooking instructions. A checked item means the customer has enough, not that a partial amount was measured. For a meal or serving revision, recompute the consolidated requirement before retail rounding.`;
 }
 
 export function estimateUsd(model: string, input: number, cached: number, output: number): number | null {

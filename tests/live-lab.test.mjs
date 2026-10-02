@@ -6,10 +6,10 @@ import { Script } from 'node:vm';
 import worker from '../live-lab/worker.mjs';
 import closedStage1b from '../stage1b/closed.mjs';
 import { page } from '../live-lab/ui.mjs';
-import { MEAL_PACKAGE_TOOL, normalizeMealPlan } from '../live-lab/meal-plan.mjs';
+import { MEAL_PACKAGE_TOOL, RETAIL_MEAL_PACKAGE_TOOL, normalizeMealPlan } from '../live-lab/meal-plan.mjs';
 import { COOKING_PROGRESS_TOOL_V2 } from '../live-lab/cooking-progress.mjs';
 import { safeRealtimeMessage } from '../live-lab/realtime-diagnostics.mjs';
-import { instructionsForCookingContent, instructionsForCookingVoice } from '../src/config.ts';
+import { instructionsForCookingContent, instructionsForCookingVoice, instructionsForRetailShopping } from '../src/config.ts';
 
 class TestDB {
   constructor() {
@@ -362,6 +362,86 @@ test('cooking voice v3 changes only plan-writing guidance on the existing text a
     const connected = await response.json();
     assert.equal(connected.behaviorVersion, 'stage1b-meal-package-v3+voice-bridge-v2');
     assert.match(connected.cookingSyncInstructions, /Put timing and coordination where the cook needs them/);
+  } finally { globalThis.fetch = original; }
+});
+
+test('retail Shopping v4 accepts a revised complete package and keeps text/voice authority intact', async () => {
+  const v3 = instructionsForCookingVoice('Four diners.');
+  const v4 = instructionsForRetailShopping('Four diners.');
+  assert.ok(v4.startsWith(v3), 'discovery and cooking instructions remain unchanged');
+  assert.match(v4, /first total each ingredient across all meal components/i);
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-meal-package-v4';
+  const visitor = await createVisitorSession(e, 'No allergies. A skillet.');
+  const packageFor = (servings, cups, ounces, display, retailTotal) => ({
+    meal: 'Greek yogurt breakfast bowls with berries', servings,
+    sections: [{ section: 'Dairy', items: [{ name: 'Greek yogurt', quantity: display,
+      required_quantity: `${cups} cups`, normalized_quantity: { amount: ounces, unit: 'fl oz' },
+      retail_total: { amount: retailTotal, unit: 'fl oz' }, have_status: 'need' }] }],
+    full_plan: [{ title: 'Build the bowls', directions: `Spoon ${cups} cups Greek yogurt into the bowls and add berries.` }],
+    current_action: 'Put out the bowls.',
+  });
+  const proposals = [packageFor(4, 2, 16, '1 × 32-oz tub', 32),
+    packageFor(20, 10, 80, '3 × 32-oz tubs', 96)];
+  const original = globalThis.fetch;
+  let call = 0;
+  globalThis.fetch = async (_url, init) => {
+    const request = JSON.parse(init.body);
+    assert.equal(request.tools[0].strict, true, 'Responses keeps strict tools');
+    assert.deepEqual(request.tools[0], RETAIL_MEAL_PACKAGE_TOOL);
+    assert.match(request.instructions, /retail_total must meet or slightly exceed/i);
+    const proposal = proposals[call++];
+    return providerStream('I got you. Breakfast bowls it is.',
+      [{ type: 'function_call', name: 'publish_meal_plan', arguments: JSON.stringify(proposal) }]);
+  };
+  async function send(text) {
+    const revision = e.DB.raw.prepare('SELECT revision FROM sessions WHERE id=?').get(visitor.id).revision;
+    const turn = await worker.fetch(req(`/api/sessions/${visitor.id}/turns`, 'POST',
+      { text, turnId: crypto.randomUUID(), expectedRevision: revision }, visitor.cookie), e, context());
+    assert.match(await turn.text(), /"type":"complete"/);
+    return (await (await worker.fetch(req(`/api/sessions/${visitor.id}`, 'GET', undefined, visitor.cookie),
+      e, context())).json());
+  }
+  let saved;
+  try {
+    saved = await send('Breakfast bowls for four.');
+    let yogurt = saved.meal_plan.sections[0].items[0];
+    assert.equal(yogurt.quantity, '1 × 32-oz tub');
+    assert.equal(yogurt.required_quantity, '2 cups');
+    assert.deepEqual(yogurt.purchase_requirement, { amount: 16, unit: 'fl oz' });
+    const changed = await worker.fetch(req(`/api/sessions/${visitor.id}/shopping/${yogurt.id}`, 'PATCH',
+      { checked: true, expectedShoppingRevision: saved.shopping_revision }, visitor.cookie), e, context());
+    assert.equal(changed.status, 200);
+    yogurt = (await changed.json()).mealPlan.sections[0].items[0];
+    assert.deepEqual(yogurt.purchase_requirement, { amount: 0, unit: 'fl oz' });
+    saved = await send('Make it for twenty instead.');
+    yogurt = saved.meal_plan.sections[0].items[0];
+    assert.equal(yogurt.quantity, '3 × 32-oz tubs');
+    assert.equal(yogurt.required_quantity, '10 cups');
+    assert.deepEqual(yogurt.normalized_quantity, { amount: 80, unit: 'fl oz' });
+    assert.deepEqual(yogurt.purchase_requirement, { amount: 80, unit: 'fl oz' });
+    assert.equal(yogurt.checked, false, 'prior possession requires review after requirement grows');
+    assert.match(saved.meal_plan.full_plan[0].directions, /10 cups Greek yogurt/,
+      'retail packaging did not replace the cooking quantity');
+    assert.equal(call, 2);
+  } finally { globalThis.fetch = original; }
+
+  globalThis.fetch = async (_url, init) => {
+    const setup = JSON.parse(init.body.get('session'));
+    assert.equal(setup.model, 'gpt-realtime-2.1');
+    assert.equal(setup.audio.output.voice, 'marin');
+    assert.deepEqual(setup.tools.map(tool => tool.name), ['publish_meal_plan', 'update_cooking_progress']);
+    assert.ok(setup.tools.every(tool => !Object.hasOwn(tool, 'strict')),
+      'Realtime continues omitting unsupported top-level strict');
+    assert.ok(setup.tools[0].parameters.properties.sections.items.properties.items.items.properties.retail_total);
+    return new Response('v=0\r\nanswer', { status: 201 });
+  };
+  try {
+    const response = await worker.fetch(req(`/api/sessions/${visitor.id}/voice/start`, 'POST',
+      { sdp: 'v=0\r\noffer', expectedRevision: saved.revision }, visitor.cookie), e, context());
+    assert.equal(response.status, 201);
+    assert.equal((await response.json()).behaviorVersion, 'stage1b-meal-package-v4+voice-bridge-v2');
   } finally { globalThis.fetch = original; }
 });
 

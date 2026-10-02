@@ -1,8 +1,8 @@
-import { instructionsFor, instructionsForCandidate, instructionsForNextFlow, instructionsForCookingMode, instructionsForCookingModeV2, instructionsForMealPackage, instructionsForCookingContent, instructionsForCookingVoice, estimateUsd, BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, NEXT_FLOW_BEHAVIOR_VERSION, COOKING_BEHAVIOR_VERSION, COOKING_PLAN_BEHAVIOR_VERSION, MEAL_PACKAGE_BEHAVIOR_VERSION, COOKING_CONTENT_BEHAVIOR_VERSION, COOKING_VOICE_BEHAVIOR_VERSION, CONTEXT_VERSION, SCENARIO_VERSION } from '../src/config.ts';
+import { instructionsFor, instructionsForCandidate, instructionsForNextFlow, instructionsForCookingMode, instructionsForCookingModeV2, instructionsForMealPackage, instructionsForCookingContent, instructionsForCookingVoice, instructionsForRetailShopping, estimateUsd, BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, NEXT_FLOW_BEHAVIOR_VERSION, COOKING_BEHAVIOR_VERSION, COOKING_PLAN_BEHAVIOR_VERSION, MEAL_PACKAGE_BEHAVIOR_VERSION, COOKING_CONTENT_BEHAVIOR_VERSION, COOKING_VOICE_BEHAVIOR_VERSION, RETAIL_SHOPPING_BEHAVIOR_VERSION, CONTEXT_VERSION, SCENARIO_VERSION } from '../src/config.ts';
 import { page } from './ui.mjs';
 import { stripJpegMetadata } from './jpeg.mjs';
 import { serviceWorker } from './push-sw.mjs';
-import { MEAL_PLAN_TOOL, MEAL_PACKAGE_TOOL, normalizeMealPlan, planFromOutput } from './meal-plan.mjs';
+import { MEAL_PLAN_TOOL, MEAL_PACKAGE_TOOL, RETAIL_MEAL_PACKAGE_TOOL, normalizeMealPlan, planFromOutput, updatePurchaseRequirements } from './meal-plan.mjs';
 import { COOKING_PROGRESS_TOOL, COOKING_PROGRESS_TOOL_V2, cookingFromOutput } from './cooking-progress.mjs';
 import { realtimeFailureDiagnostic } from './realtime-diagnostics.mjs';
 
@@ -14,11 +14,13 @@ const SESSION_COOKIE = '__Host-sndlab-session';
 const CUSTOMER_COOKIE = '__Host-sndlab-customer';
 const encoder = new TextEncoder();
 const isStage1b = env => env.STAGE1B_ENABLED === 'true';
-const isPackageVersion = version => [MEAL_PACKAGE_BEHAVIOR_VERSION, COOKING_CONTENT_BEHAVIOR_VERSION, COOKING_VOICE_BEHAVIOR_VERSION].includes(version);
+const isPackageVersion = version => [MEAL_PACKAGE_BEHAVIOR_VERSION, COOKING_CONTENT_BEHAVIOR_VERSION,
+  COOKING_VOICE_BEHAVIOR_VERSION, RETAIL_SHOPPING_BEHAVIOR_VERSION].includes(version);
 const isBridgeVersion = version => version === COOKING_PLAN_BEHAVIOR_VERSION || isPackageVersion(version);
 const isCookingVersion = version => version === COOKING_BEHAVIOR_VERSION || isBridgeVersion(version);
 const isNextFlow = version => version === NEXT_FLOW_BEHAVIOR_VERSION || isCookingVersion(version);
-const toolsFor = version => isPackageVersion(version)
+const toolsFor = version => version === RETAIL_SHOPPING_BEHAVIOR_VERSION
+  ? [RETAIL_MEAL_PACKAGE_TOOL, COOKING_PROGRESS_TOOL_V2] : isPackageVersion(version)
   ? [MEAL_PACKAGE_TOOL, COOKING_PROGRESS_TOOL_V2] : version === COOKING_PLAN_BEHAVIOR_VERSION
   ? [MEAL_PLAN_TOOL, COOKING_PROGRESS_TOOL_V2] : version === COOKING_BEHAVIOR_VERSION
     ? [MEAL_PLAN_TOOL, COOKING_PROGRESS_TOOL] : version === NEXT_FLOW_BEHAVIOR_VERSION ? [MEAL_PLAN_TOOL] : [];
@@ -210,7 +212,8 @@ function nextCookingState(session, proposed, assistantId, userTurnId, at) {
 
 function mealProposal(output, session, version) {
   return planFromOutput(output, isPackageVersion(version)
-    ? { requireFullPlan: true, priorPlan: session.meal_plan_json ? JSON.parse(session.meal_plan_json) : null }
+    ? { requireFullPlan: true, requireRetail: version === RETAIL_SHOPPING_BEHAVIOR_VERSION,
+      priorPlan: session.meal_plan_json ? JSON.parse(session.meal_plan_json) : null }
     : {});
 }
 
@@ -355,6 +358,7 @@ async function setShoppingItem(request, env, id, itemId) {
   item.have_status = input.checked ? 'confirmed' : 'need';
   item.customer_edited = true;
   delete item.quantity_changed;
+  updatePurchaseRequirements(plan);
   const at = now();
   const changed = await env.DB.prepare(`UPDATE sessions SET meal_plan_json=?,shopping_revision=shopping_revision+1,updated_at=?
     WHERE id=? AND shopping_revision=? AND meal_revision=? AND meal_plan_json IS NOT NULL`)
@@ -520,7 +524,8 @@ function firstUsefulProxy(text) {
 function behaviorFor(env, context, hasAcceptedMeal = false, cookingActive = false) {
   const version = env.BEHAVIOR_VERSION || BEHAVIOR_VERSION;
   if (isPackageVersion(version) && isStage1b(env) && (!env.ARM || env.ARM === 'C'))
-    return { version, instructions: (version === COOKING_VOICE_BEHAVIOR_VERSION ? instructionsForCookingVoice
+    return { version, instructions: (version === RETAIL_SHOPPING_BEHAVIOR_VERSION ? instructionsForRetailShopping
+      : version === COOKING_VOICE_BEHAVIOR_VERSION ? instructionsForCookingVoice
       : version === COOKING_CONTENT_BEHAVIOR_VERSION ? instructionsForCookingContent
       : instructionsForMealPackage)(context, hasAcceptedMeal, cookingActive) };
   if (version === COOKING_PLAN_BEHAVIOR_VERSION && isStage1b(env) && (!env.ARM || env.ARM === 'C'))
@@ -733,7 +738,8 @@ async function startVoice(request, env, id) {
       behaviorVersion: voiceBehaviorVersion, connectMs,
       ...(isNextFlow(behavior.version) ? { syncInstructions: instructions } : {}),
       ...(isCookingVersion(behavior.version) ? { cookingSyncInstructions:
-        (behavior.version === COOKING_VOICE_BEHAVIOR_VERSION ? instructionsForCookingVoice :
+        (behavior.version === RETAIL_SHOPPING_BEHAVIOR_VERSION ? instructionsForRetailShopping :
+          behavior.version === COOKING_VOICE_BEHAVIOR_VERSION ? instructionsForCookingVoice :
           behavior.version === COOKING_CONTENT_BEHAVIOR_VERSION ? instructionsForCookingContent :
           isPackageVersion(behavior.version) ? instructionsForMealPackage :
           behavior.version === COOKING_PLAN_BEHAVIOR_VERSION ? instructionsForCookingModeV2 : instructionsForCookingMode)(contextText, true, true) +
@@ -1215,7 +1221,7 @@ async function dispatchReturns(env) {
 
 async function streamTurn(request, env, ctx, id) {
   if (!env.OPENAI_API_KEY) return json({ error: 'MODEL_UNAVAILABLE' }, 503);
-  if (![BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, NEXT_FLOW_BEHAVIOR_VERSION, COOKING_BEHAVIOR_VERSION, COOKING_PLAN_BEHAVIOR_VERSION, MEAL_PACKAGE_BEHAVIOR_VERSION, COOKING_CONTENT_BEHAVIOR_VERSION, COOKING_VOICE_BEHAVIOR_VERSION].includes(env.BEHAVIOR_VERSION || BEHAVIOR_VERSION)
+  if (![BEHAVIOR_VERSION, CANDIDATE_BEHAVIOR_VERSION, NEXT_FLOW_BEHAVIOR_VERSION, COOKING_BEHAVIOR_VERSION, COOKING_PLAN_BEHAVIOR_VERSION, MEAL_PACKAGE_BEHAVIOR_VERSION, COOKING_CONTENT_BEHAVIOR_VERSION, COOKING_VOICE_BEHAVIOR_VERSION, RETAIL_SHOPPING_BEHAVIOR_VERSION].includes(env.BEHAVIOR_VERSION || BEHAVIOR_VERSION)
     || (env.BEHAVIOR_VERSION === CANDIDATE_BEHAVIOR_VERSION && env.ARM && env.ARM !== 'C')
     || (isNextFlow(env.BEHAVIOR_VERSION) && (!isStage1b(env) || (env.ARM && env.ARM !== 'C'))))
     return json({ error: 'INVALID_BEHAVIOR_CONFIGURATION' }, 503);
