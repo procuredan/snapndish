@@ -19,7 +19,8 @@ class TestDB {
     for (const file of ['0002_turn_operations.sql', '0003_stage1b_identity_meal.sql',
       '0004_stage1b_images.sql', '0005_stage1b_context_snapshot.sql',
        '0006_stage1b_voice.sql', '0007_stage1b_return.sql', '0008_next_flow_shopping.sql',
-       '0009_cooking_progress.sql', '0010_bridge_currentness_metrics.sql'])
+       '0009_cooking_progress.sql', '0010_bridge_currentness_metrics.sql',
+       '0011_dashboard_foundation.sql'])
       this.raw.exec(fs.readFileSync(new URL('../stage1b/migrations/' + file, import.meta.url), 'utf8'));
   }
   prepare(sql) {
@@ -66,7 +67,8 @@ async function createVisitorSession(e, customerContext, ctx = context()) {
   const r = await worker.fetch(req('/api/sessions', 'POST', { context: customerContext }), e, ctx);
   assert.equal(r.status, 201);
   assert.match(r.headers.get('Set-Cookie'), /__Host-sndlab-session=.*HttpOnly; Secure; SameSite=Strict/);
-  return { ...(await r.json()), cookie: r.headers.get('Set-Cookie').split(';')[0] };
+  return { ...(await r.json()), cookie: r.headers.get('Set-Cookie').split(';')[0],
+    allCookies: r.headers.getSetCookie().map(value => value.split(';')[0]).join('; ') };
 }
 function providerStream(text, output = []) {
   const frames = [
@@ -2141,4 +2143,112 @@ test('a newer shopping checkbox wins over an older model meal replacement', asyn
     assert.equal(e.DB.raw.prepare("SELECT COUNT(*) AS n FROM state_events WHERE kind='meal_plan_accepted'").get().n, 0);
     assert.equal(e.DB.raw.prepare("SELECT COUNT(*) AS n FROM state_events WHERE kind='meal_plan_proposal_stale'").get().n, 1);
   } finally { release(); globalThis.fetch = original; }
+});
+
+test('V1 dashboard renders five sections and keeps conversation entry on staging only', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.RELEASE_ENV = 'staging';
+  e.DASHBOARD_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-meal-package-v5.1';
+  const home = await (await worker.fetch(req('/'), e, context())).text();
+  for (const name of ['What are we dishing?', 'Today’s Cooks', 'Shopping List',
+    'Future Cooks', 'Previously Cooked', 'Favorites', 'Snap It', 'Write It', 'Talk It'])
+    assert.ok(home.includes(name), `${name} is rendered`);
+  assert.match(home, /href="#dash-history"/);
+  assert.match(home, /id="chat"/);
+  assert.match(home, /No recipe photograph available/);
+  assert.doesNotThrow(() => new Script(home.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1]));
+  e.RELEASE_ENV = 'production';
+  const production = await (await worker.fetch(req('/'), e, context())).text();
+  assert.doesNotMatch(production, /id="dashboard"|id="dash-history"/);
+});
+
+test('accepted V5.1 packages create immutable owned history once; expiry cannot delete it', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.RELEASE_ENV = 'staging';
+  e.DASHBOARD_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-meal-package-v5.1';
+  const first = await createVisitorSession(e, 'Dinner for four.');
+  const second = await createVisitorSession(e, 'Another cook.');
+  const plan = JSON.parse(fs.readFileSync(new URL('./fixtures/v5-1-serving-revision.json', import.meta.url)));
+  const original = globalThis.fetch;
+  let providerCalls = 0;
+  globalThis.fetch = async () => {
+    providerCalls++;
+    return providerStream('Here is your complete meal.', [{ type: 'function_call',
+      name: 'publish_meal_plan', arguments: JSON.stringify(plan) }]);
+  };
+  try {
+    const turnId = crypto.randomUUID();
+    const payload = { text: 'Make the shawarma meal for four.', turnId, expectedRevision: 0 };
+    const accepted = await worker.fetch(req(`/api/sessions/${first.id}/turns`, 'POST',
+      payload, first.cookie), e, context());
+    assert.match(await accepted.text(), /"type":"complete"/);
+    const repeated = await worker.fetch(req(`/api/sessions/${first.id}/turns`, 'POST',
+      payload, first.cookie), e, context());
+    await repeated.text();
+    assert.equal(providerCalls, 1);
+
+    const dashboard = await (await worker.fetch(req('/api/dashboard', 'GET', undefined,
+      first.allCookies), e, context())).json();
+    assert.equal(dashboard.active_cooks.length, 1);
+    assert.equal(dashboard.previously_cooked.length, 1);
+    assert.equal(dashboard.previously_cooked[0].status, 'selected');
+    assert.equal(dashboard.future_cooks.length, 0);
+    assert.equal(dashboard.favorites.length, 0);
+    const id = dashboard.previously_cooked[0].recipe_version_id;
+    const detail = await (await worker.fetch(req('/api/dashboard/recipes/' + id, 'GET',
+      undefined, first.allCookies), e, context())).json();
+    assert.equal(detail.recipe.meal, plan.meal);
+    assert.deepEqual(detail.recipe.full_plan, plan.full_plan);
+    assert.equal((await worker.fetch(req('/api/dashboard/recipes/' + id, 'GET',
+      undefined, second.allCookies), e, context())).status, 404);
+    assert.equal((await (await worker.fetch(req('/api/dashboard', 'GET', undefined,
+      second.allCookies), e, context())).json()).previously_cooked.length, 0);
+    assert.throws(() => e.DB.raw.prepare('UPDATE dashboard_recipe_versions SET meal=? WHERE id=?')
+      .run('Changed', id), /IMMUTABLE_RECIPE_VERSION/);
+
+    const current = await (await worker.fetch(req(`/api/sessions/${first.id}`, 'GET',
+      undefined, first.allCookies), e, context())).json();
+    const selectedAgain = await worker.fetch(req(`/api/sessions/${first.id}/turns`, 'POST',
+      { text: 'Keep the same recipe.', turnId: crypto.randomUUID(),
+        expectedRevision: current.revision }, first.cookie), e, context());
+    assert.match(await selectedAgain.text(), /"type":"complete"/);
+    assert.equal(e.DB.raw.prepare('SELECT COUNT(*) AS n FROM dashboard_recipe_versions').get().n, 2);
+    assert.equal(e.DB.raw.prepare('SELECT COUNT(*) AS n FROM dashboard_selection_history').get().n, 2);
+
+    e.DB.raw.prepare('UPDATE sessions SET expires_at=? WHERE id=?')
+      .run('2000-01-01T00:00:00.000Z', first.id);
+    e.DB.raw.prepare('UPDATE customers SET expires_at=? WHERE id=(SELECT owner_id FROM dashboard_recipe_versions WHERE id=?)')
+      .run('2000-01-01T00:00:00.000Z', id);
+    await worker.scheduled({}, e);
+    assert.equal(e.DB.raw.prepare('SELECT COUNT(*) AS n FROM dashboard_recipe_versions WHERE id=?').get(id).n, 1);
+    assert.equal(e.DB.raw.prepare('SELECT COUNT(*) AS n FROM dashboard_selection_history WHERE recipe_version_id=?').get(id).n, 1);
+    assert.equal((await worker.fetch(req('/api/dashboard/recipes/' + id, 'GET',
+      undefined, first.allCookies), e, context())).status, 404);
+  } finally { globalThis.fetch = original; }
+});
+
+test('failed V5.1 package repair creates no dashboard history', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.RELEASE_ENV = 'staging';
+  e.DASHBOARD_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-meal-package-v5.1';
+  const visitor = await createVisitorSession(e, 'Dinner.');
+  const invalid = JSON.parse(fs.readFileSync(new URL('./fixtures/v5-1-serving-revision.json', import.meta.url)));
+  invalid.full_plan[0].directions = 'A'.repeat(2001);
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => providerStream('A meal is ready.', [{ type: 'function_call',
+    name: 'publish_meal_plan', arguments: JSON.stringify(invalid) }]);
+  try {
+    const result = await worker.fetch(req(`/api/sessions/${visitor.id}/turns`, 'POST',
+      { text: 'Make dinner.', turnId: crypto.randomUUID(), expectedRevision: 0 },
+      visitor.cookie), e, context());
+    await result.text();
+    assert.equal(e.DB.raw.prepare('SELECT COUNT(*) AS n FROM dashboard_recipe_versions').get().n, 0);
+    assert.equal(e.DB.raw.prepare('SELECT COUNT(*) AS n FROM dashboard_selection_history').get().n, 0);
+  } finally { globalThis.fetch = original; }
 });

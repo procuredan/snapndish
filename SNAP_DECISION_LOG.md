@@ -231,6 +231,14 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 - **Scope / proof:** Keep one conditional meal-package authority and currentness gates. Preserve Retail Shopping, explicit checklist edits, reported physical progress, text/voice continuity and prior package on failure. Run local and CI regressions, focused live model comparisons, and rendered plus real microphone checks only on isolated Stage 1B staging. Fresh unscripted owner use is the V5.1 culinary quality gate. No D1 migration, Stage 1A change or production deployment is authorized.
 - **Supersedes:** SNDISH-024 only for V5.1's versioned acceptance and repair diagnostics; V5 itself remains reproducible.
 
+### SNDISH-026 — V1 dashboard Milestones 0 and 1 on isolated staging
+
+- **Date / owner:** 2026-10-19; Snap n Dish product owner, via the V1 Dashboard Engineering GO.
+- **Decision:** Start from exact V5.1 source `576b11e514e1460af1f607978353926a506f4dbf` on a new branch. Verify active Cloudflare state, isolation, Access, migration ledger and recovery before deployment. Build a mobile-first five-section dashboard with What are we dishing? and existing Snap It, Write It and Talk It paths. Add the minimum durable owner, immutable accepted recipe version, cook, selection history, collection, settings and idempotency foundations. Successful complete package acceptance creates history; failure does not. The accepted session package remains the culinary and Shopping authority. A selected recipe is not evidence of physical cooking.
+- **Scope / proof:** Milestones 0–1 only. Use protected synthetic staging identities. Preserve V5.1 model, prompts, voice, validation, Shopping and cooking behavior. Require local regression, exact-source CI, additive migration review, D1 recovery, compatible code rollback, Access protection and rendered isolated staging verification. Production remains outside this authorization.
+- **Deferred decisions:** Real customer sign-in and providers require a separately approved verified integration plan. Commercial data retention, deletion, derived culinary knowledge, images and rights, multi-cook Shopping/reset, collections actions, retrieval, membership and billing require later authorization or policy. Approved visual mockups must be recovered before visual fidelity can be claimed.
+- **Supersedes:** Prior Stage 1B prototype scope only where it excluded this expressly authorized dashboard foundation. Earlier culinary behavior and production gates remain binding.
+
 ## Open decisions — no authority may be invented
 
 1. Stage 1A quality result and owner benchmark/human review; the current prototype tests are not that decision.

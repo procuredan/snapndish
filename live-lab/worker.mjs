@@ -6,6 +6,7 @@ import { MEAL_PLAN_TOOL, MEAL_PACKAGE_TOOL, RETAIL_MEAL_PACKAGE_TOOL, COOKING_QU
 import { COOKING_PROGRESS_TOOL, COOKING_PROGRESS_TOOL_V2, COOKING_PROGRESS_TOOL_V51, cookingFromOutput } from './cooking-progress.mjs';
 import { boundedBridgeDiagnostic } from './bridge-diagnostics.mjs';
 import { realtimeFailureDiagnostic } from './realtime-diagnostics.mjs';
+import { dashboardSummary, dashboardRecipe } from './dashboard.mjs';
 
 const DAY = 86_400_000;
 const VOICE_MODEL = 'gpt-realtime-2.1';
@@ -15,6 +16,8 @@ const SESSION_COOKIE = '__Host-sndlab-session';
 const CUSTOMER_COOKIE = '__Host-sndlab-customer';
 const encoder = new TextEncoder();
 const isStage1b = env => env.STAGE1B_ENABLED === 'true';
+const dashboardEnabled = env => isStage1b(env) && env.RELEASE_ENV === 'staging' &&
+  env.DASHBOARD_ENABLED === 'true';
 const isPackageVersion = version => [MEAL_PACKAGE_BEHAVIOR_VERSION, COOKING_CONTENT_BEHAVIOR_VERSION,
   COOKING_VOICE_BEHAVIOR_VERSION, RETAIL_SHOPPING_BEHAVIOR_VERSION, COOKING_QUALITY_BEHAVIOR_VERSION,
   COOKING_QUALITY_V51_BEHAVIOR_VERSION].includes(version);
@@ -111,7 +114,7 @@ async function canUseSession(request, env, id) {
 function html(kind, env) {
   const nonce = randomToken(15);
   return new Response(page(kind, nonce, isStage1b(env), isNextFlow(env.BEHAVIOR_VERSION),
-    isPackageVersion(env.BEHAVIOR_VERSION), env.RELEASE_ENV === 'production'), { headers: {
+    isPackageVersion(env.BEHAVIOR_VERSION), env.RELEASE_ENV === 'production', dashboardEnabled(env)), { headers: {
     ...BASE_HEADERS,
     'Permissions-Policy': isStage1b(env) ? 'camera=(self), microphone=(self), geolocation=()' : BASE_HEADERS['Permissions-Policy'],
     'Content-Type': 'text/html; charset=utf-8',
@@ -1727,6 +1730,18 @@ export default {
       return json({ error: 'NOT_FOUND' }, 404);
     }
     if (isStage1b(env)) {
+      if (dashboardEnabled(env) && url.pathname === '/api/dashboard' && request.method === 'GET') {
+        const customer = await currentCustomer(request, env);
+        return customer ? json(await dashboardSummary(env.DB, customer.id, now()))
+          : json({ error: 'NOT_FOUND' }, 404);
+      }
+      const dashboardRecipeId = url.pathname.match(/^\/api\/dashboard\/recipes\/([0-9a-f]{32})$/i);
+      if (dashboardEnabled(env) && dashboardRecipeId && request.method === 'GET') {
+        const customer = await currentCustomer(request, env);
+        if (!customer) return json({ error: 'NOT_FOUND' }, 404);
+        const recipe = await dashboardRecipe(env.DB, customer.id, dashboardRecipeId[1]);
+        return recipe ? json(recipe) : json({ error: 'NOT_FOUND' }, 404);
+      }
       if (url.pathname === '/api/pair/start' && request.method === 'POST') return startPair(request, env);
       if (url.pathname === '/api/pair/claim' && request.method === 'POST') return claimPair(request, env);
       if (url.pathname === '/api/customer/sessions' && request.method === 'GET') return customerSessions(request, env);
