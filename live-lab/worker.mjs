@@ -46,6 +46,10 @@ const BASE_HEADERS = {
 };
 
 function now() { return new Date().toISOString(); }
+// D1 includes trigger writes in changes, so a matched conditional update can change multiple rows.
+function conditionalUpdateMatched(result) {
+  return Number.isSafeInteger(result?.meta?.changes) && result.meta.changes > 0;
+}
 function json(value, status = 200, headers = {}) {
   return new Response(JSON.stringify(value), { status, headers: { ...BASE_HEADERS, 'Content-Type': 'application/json; charset=utf-8', ...headers } });
 }
@@ -879,7 +883,7 @@ async function acceptVoiceProposal(env, id, session, voice, input) {
       .bind(...(isMeal ? packageVoice ? [planJson, revisedJson] : [planJson] : [cookingJson]),
         voice.id, voice.id, responseId, callId),
   ]);
-  if (changed[0].meta.changes !== 1)
+  if (!conditionalUpdateMatched(changed[0]))
     return json({ status: 'stale_rejected', accepted: false, reason: 'ACCEPTED_STATE_CHANGED' });
   return json({ status: 'accepted', accepted: true,
     operation: isMeal ? 'meal' : 'cooking', mealRevision: session.meal_revision + (isMeal ? 1 : 0),
@@ -1652,7 +1656,7 @@ async function streamTurn(request, env, ctx, id) {
                    repair_count: bridgeContinuationCount, attempts: bridgeDiagnostics }))] : []),
            ]);
           const wasAccepted = write[0].meta.changes === 1;
-          const proposalStale = wasAccepted && Boolean(planJson || cookingJson) && write[5].meta.changes !== 1;
+          const proposalStale = wasAccepted && Boolean(planJson || cookingJson) && !conditionalUpdateMatched(write[5]);
           if (proposalStale) await event(env.DB, id, turnId, revision,
             planJson ? 'meal_plan_proposal_stale' : 'cooking_proposal_stale',
             { model_call_id: callId, reason: 'ACCEPTED_STATE_CHANGED' });
