@@ -15,6 +15,7 @@ import { instructionsForCookingContent, instructionsForCookingVoice, instruction
 class TestDB {
   constructor() {
     this.raw = new DatabaseSync(':memory:');
+    this.changeLog = [];
     this.raw.exec(fs.readFileSync(new URL('../live-lab/migrations/0001_init.sql', import.meta.url), 'utf8'));
     for (const file of ['0002_turn_operations.sql', '0003_stage1b_identity_meal.sql',
       '0004_stage1b_images.sql', '0005_stage1b_context_snapshot.sql',
@@ -25,10 +26,17 @@ class TestDB {
   }
   prepare(sql) {
     const db = this.raw;
+    const testDb = this;
     return {
       bind(...params) {
         return {
-          async run() { return { meta: { changes: db.prepare(sql).run(...params).changes } }; },
+          async run() {
+            const before = db.prepare('SELECT total_changes() AS count').get().count;
+            db.prepare(sql).run(...params);
+            const result = { meta: { changes: db.prepare('SELECT total_changes() AS count').get().count - before } };
+            testDb.changeLog.push({ sql, changes: result.meta.changes });
+            return testDb.changeResultOverride?.(sql, result) ?? result;
+          },
           async first() { return db.prepare(sql).get(...params) ?? null; },
           async all() { return { results: db.prepare(sql).all(...params) }; },
         };
@@ -920,7 +928,16 @@ test('Talk It accepts the complete package before speaking and reuses it on reco
     userItemId: 'item_package_one', call: { name: 'publish_meal_plan', arguments: JSON.stringify(packageCall) },
     usage: { input_tokens: 80, output_tokens: 120 }, fullMs: 2900 });
   assert.equal(result.accepted, true);
+  assert.equal(result.status, 'accepted');
   assert.equal(result.operation, 'meal');
+  assert.ok(e.DB.changeLog.some(entry => entry.sql.includes('UPDATE sessions SET meal_revision=meal_revision+1')
+    && entry.changes > 1), 'D1 reports trigger writes in the conditional meal update');
+  const replay = await post({ type: 'proposal', responseId: 'resp_package_one',
+    userItemId: 'item_package_one', call: { name: 'publish_meal_plan', arguments: JSON.stringify(packageCall) } });
+  assert.equal(replay.status, 'accepted');
+  assert.equal(replay.accepted, true);
+  assert.equal(e.DB.raw.prepare("SELECT COUNT(*) AS n FROM state_events WHERE kind='meal_plan_accepted'").get().n, 1);
+  assert.equal(e.DB.raw.prepare('SELECT COUNT(*) AS n FROM dashboard_recipe_versions').get().n, 1);
   let saved = await (await worker.fetch(req(`/api/sessions/${id}`, 'GET', undefined, cookie), e, context())).json();
   assert.equal(saved.meal_plan.full_plan.length, 2);
   assert.equal(saved.cooking_progress, null);
@@ -1729,7 +1746,9 @@ test('Cooking Mode accepts only customer-reported progress and keeps one current
     const revision = e.DB.raw.prepare('SELECT revision FROM sessions WHERE id=?').get(visitor.id).revision;
     const response = await worker.fetch(req(`/api/sessions/${visitor.id}/turns`, 'POST',
       { text, turnId: crypto.randomUUID(), expectedRevision: revision }, visitor.cookie), e, context());
-    assert.match(await response.text(), /"type":"complete"/);
+    const stream = await response.text();
+    assert.match(stream, /"type":"complete"/);
+    assert.match(stream, /"proposalStale":false/);
   }
   try {
     await send('That meal sounds good. Shopping is complete.');
@@ -2185,7 +2204,12 @@ test('accepted V5.1 packages create immutable owned history once; expiry cannot 
     const payload = { text: 'Make the shawarma meal for four.', turnId, expectedRevision: 0 };
     const accepted = await worker.fetch(req(`/api/sessions/${first.id}/turns`, 'POST',
       payload, first.cookie), e, context());
-    assert.match(await accepted.text(), /"type":"complete"/);
+    const acceptedStream = await accepted.text();
+    assert.match(acceptedStream, /"type":"complete"/);
+    assert.match(acceptedStream, /"proposalStale":false/);
+    assert.ok(e.DB.changeLog.some(entry => entry.sql.includes('UPDATE sessions SET meal_revision=meal_revision+1')
+      && entry.changes > 1), 'D1 reports trigger writes in the conditional meal update');
+    assert.equal(e.DB.raw.prepare("SELECT COUNT(*) AS n FROM state_events WHERE kind='meal_plan_proposal_stale'").get().n, 0);
     const repeated = await worker.fetch(req(`/api/sessions/${first.id}/turns`, 'POST',
       payload, first.cookie), e, context());
     await repeated.text();
@@ -2228,6 +2252,30 @@ test('accepted V5.1 packages create immutable owned history once; expiry cannot 
     assert.equal(e.DB.raw.prepare('SELECT COUNT(*) AS n FROM dashboard_selection_history WHERE recipe_version_id=?').get(id).n, 1);
     assert.equal((await worker.fetch(req('/api/dashboard/recipes/' + id, 'GET',
       undefined, first.allCookies), e, context())).status, 404);
+  } finally { globalThis.fetch = original; }
+});
+
+test('conditional acceptance does not trust missing or invalid D1 change metadata', async () => {
+  const plan = JSON.parse(fs.readFileSync(new URL('./fixtures/v5-1-serving-revision.json', import.meta.url)));
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => providerStream('Here is your complete meal.', [{ type: 'function_call',
+    name: 'publish_meal_plan', arguments: JSON.stringify(plan) }]);
+  try {
+    for (const metadata of [{}, { meta: { changes: '2' } }, { meta: { changes: -1 } },
+      { meta: { changes: 1.5 } }, { meta: { changes: 0 } }]) {
+      const e = env();
+      e.STAGE1B_ENABLED = 'true';
+      e.BEHAVIOR_VERSION = 'stage1b-meal-package-v5.1';
+      const visitor = await createVisitorSession(e, 'Dinner for four.');
+      e.DB.changeResultOverride = (sql, result) => sql.includes('UPDATE sessions SET meal_revision=meal_revision+1')
+        ? metadata : result;
+      const response = await worker.fetch(req(`/api/sessions/${visitor.id}/turns`, 'POST',
+        { text: 'Make the shawarma meal for four.', turnId: crypto.randomUUID(), expectedRevision: 0 },
+        visitor.cookie), e, context());
+      const stream = await response.text();
+      assert.match(stream, /"proposalStale":true/);
+      assert.doesNotMatch(stream, /"proposalStale":false/);
+    }
   } finally { globalThis.fetch = original; }
 });
 
