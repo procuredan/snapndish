@@ -6,6 +6,8 @@ Before material work, read [`SNAP_GLOBAL_RULES.md`](SNAP_GLOBAL_RULES.md), [`SNA
 
 ## Current authorization boundary
 
+The 2026-10-19 PM Engineering GO authorizes V1 Dashboard Milestones 0 and 1 on isolated `snapndish-stage1b-staging` only, starting from `codex/stage1b-v5-1-bounded-recovery` commit `576b11e514e1460af1f607978353926a506f4dbf`. Preserve `stage1b-meal-package-v5.1`. The dashboard may add durable recipe/cook foundations and synthetic staging ownership after readiness gates, but must not activate real customer sign-in, commercial storage, Milestones 2–4, billing, culinary learning, or production changes. Staging deployment requires exact-source CI, schema/recovery review, and rendered verification; the PM retains production authority. See SNDISH-026 and `stage1b/V1_DASHBOARD_M0_M1_WORK_RECORD.md` for this work. Historical authorizations below remain part of the record.
+
 The owner has authorized the five Stage 1B capability proofs in SNDISH-015, the Next Flow Build in SNDISH-016, and the revised Cooking Mode experiment in SNDISH-018 on isolated Stage 1B staging. Preserve the instrumented Stage 1A Live Lab at `app.snapndish.com`, its direct chat entry, protected owner review, controlled evaluation, and private results. Build Stage 1B incrementally on separate Snap n Dish staging resources. This does not authorize a public beta, commercial-alpha build, or production deployment. Future production deployments require explicit owner authorization.
 
 ## Snap n Dish build principles
@@ -27,10 +29,10 @@ Write down the existing system, its authoritative owner, the requested extension
 
 - Run the relevant local checks and evaluate material AI behavior on fixed and held-out cases, with human culinary review before promotion. A green CLI test is not a culinary quality result.
 - CI is verification only. The repository's GitHub workflow must not contain deployment credentials or `wrangler deploy`.
-- A `git push` changes GitHub history only. A future Cloudflare deploy is a separate, explicitly invoked action under Snap n Dish-specific configuration. Never use Snap n Done Wrangler IDs, routes, queues, models, budgets or secrets.
+- A `git push` changes GitHub history only. A Cloudflare deploy is a separate, explicitly invoked action under Snap n Dish-specific configuration and the applicable PM gate. Never use Snap n Done Wrangler IDs, routes, queues, models, budgets or secrets.
 - Material runtime changes reach isolated staging before production. Verify the actual rendered conversation and critical journeys on target devices, current behavior/model version, telemetry, and operational gates. Record rollback and data recovery before deploying.
 - Production deployment requires explicit owner authorization every time. After deployment, verify health **and** a real critical journey; report what was not verified.
 
 ## Out of scope unless separately authorized
 
-No Snap n Done provider, job, quote, routing/BID_READY, matching, offer, fee, tip, transfer, Stripe/payment, supply, marketplace SMS or Walter policy belongs here. Do not mutate Snap n Done, Procure, Walter, Clink Pass or their resources. Stage 1B includes the five original proofs plus the explicitly authorized next-flow and cooking choreography experiments. Do not build grocery commerce, a recipe corpus, native clients, a parent-profile service, advanced schedule orchestration, or the commercial-alpha application.
+No Snap n Done provider, job, quote, routing/BID_READY, matching, offer, fee, tip, transfer, Stripe/payment, supply, marketplace SMS or Walter policy belongs here. Do not mutate Snap n Done, Procure, Walter, Clink Pass or their resources. Stage 1B includes the original proofs, the authorized next-flow and cooking choreography experiments, and V1 Dashboard Milestones 0–1. Do not build grocery commerce, a recipe corpus, native clients, a parent-profile service, advanced schedule orchestration, or the commercial-alpha application.
