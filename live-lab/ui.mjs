@@ -92,7 +92,7 @@ function voiceContext(v,itemId){
 }
 function requestVoiceResponse(v,itemId,phase,options={}){
   if(v.closing||voice!==v||generation!==v.generation||v.activeRequest||v.processingResponse||v.toolPending||
-    v.speechActive||v.inputCursor<v.committedInputs.length||v.dc?.readyState!=='open')return false;
+    v.speechActive||v.inputJobs>0||v.inputCursor<v.committedInputs.length||v.dc?.readyState!=='open')return false;
   if(session?.revision!==v.acceptedUsers.get(itemId)?.revision){
     voiceDiagnostic(v,'input_skipped',{itemId,reason:'superseded'});return false;
   }
@@ -117,7 +117,7 @@ function requestVoiceResponse(v,itemId,phase,options={}){
 }
 function scheduleVoiceResponse(v){
   if(v.closing||voice!==v||generation!==v.generation||v.activeRequest||v.processingResponse||v.toolPending||v.pendingToolOutput||
-    v.speechActive||v.inputCursor<v.committedInputs.length)return;
+    v.speechActive||v.inputJobs>0||v.inputCursor<v.committedInputs.length)return;
   while(v.pendingInputs.length){
     const itemId=v.pendingInputs[0];
     if(!v.acceptedUsers.has(itemId)){v.pendingInputs.shift();continue}
@@ -137,25 +137,32 @@ function scheduleVoiceResponse(v){
   }
 }
 function processVoiceInputs(v){
+  v.inputJobs=(v.inputJobs||0)+1;
   voiceQueue(v,async()=>{
-    while(v.inputCursor<v.committedInputs.length){
-      const itemId=v.committedInputs[v.inputCursor],result=v.inputResults.get(itemId);
-      if(!result)break;
-      v.inputCursor++;
-      if(result.outcome!=='nonempty'){
-        voiceDiagnostic(v,'input_skipped',{itemId,reason:result.outcome==='failed'?'failed':'missing'});
-        continue;
+    let completed=false;
+    try{
+      while(v.inputCursor<v.committedInputs.length){
+        const itemId=v.committedInputs[v.inputCursor],result=v.inputResults.get(itemId);
+        if(!result)break;
+        v.inputCursor++;
+        if(result.outcome!=='nonempty'){
+          voiceDiagnostic(v,'input_skipped',{itemId,reason:result.outcome==='failed'?'failed':'missing'});
+          continue;
+        }
+        const accepted=await voicePost(v,{type:'user',itemId,transcript:result.transcript,usage:result.usage});
+        v.acceptedUsers.set(itemId,accepted);
+        if(voice===v&&!v.closing){session.revision=accepted.revision;bubble('user',result.transcript+'  · spoken');v.pendingInputs.push(itemId)}
       }
-      const accepted=await voicePost(v,{type:'user',itemId,transcript:result.transcript,usage:result.usage});
-      v.acceptedUsers.set(itemId,accepted);
-      if(voice===v&&!v.closing){session.revision=accepted.revision;bubble('user',result.transcript+'  · spoken');v.pendingInputs.push(itemId)}
+      completed=true;
+    }finally{
+      v.inputJobs--;
+      if(completed&&v.inputJobs===0){drainVoice(v);scheduleVoiceResponse(v)}
     }
-    drainVoice(v);scheduleVoiceResponse(v);
   });
 }
 function drainVoiceV2(v){
   if(v.closing||voice!==v||v.toolPending||v.processingResponse||
-    v.speechActive||v.inputCursor<v.committedInputs.length)return;
+    v.speechActive||v.inputJobs>0||v.inputCursor<v.committedInputs.length)return;
   while(v.responses.length){
     const owned=v.responses.shift(),response=owned.response,itemId=owned.itemId;
     if(response.status!=='completed'){scheduleVoiceResponse(v);continue}

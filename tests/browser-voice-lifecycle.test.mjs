@@ -20,12 +20,13 @@ test('real browser defers tool continuation while a newer customer interruption 
     const id='11111111-1111-4111-8111-111111111111',old='item_older_tool',newer='item_newer_speech';
     session={id,revision:1,turns:[],meal_plan:null,meal_revision:0,shopping_revision:0,
       cooking_progress:null,cooking_revision:0};
-    const sent=[],posted=[];
+    const sent=[],posted=[];let finishSave;
     window.fetch=async(url,options)=>{
       if(!url.endsWith('/voice/events'))throw Error('unexpected request');
       const body=JSON.parse(options.body);posted.push(body);
       if(body.type!=='user')throw Error('older tool result reached application authority');
-      return new Response(JSON.stringify({turnId:'turn_newer',revision:2,status:'accepted'}));
+      return new Promise(resolve=>{finishSave=()=>resolve(new Response(JSON.stringify({
+        turnId:'turn_newer',revision:2,status:'accepted'})))});
     };
     const v={id:'22222222-2222-4222-8222-222222222222',sessionId:id,generation,
       behaviorVersion:'stage1b-meal-package-v5.1+voice-bridge-v2',work:Promise.resolve(),
@@ -50,6 +51,12 @@ test('real browser defers tool continuation while a newer customer interruption 
     if(sent.length)throw Error('older continuation raced pending transcription');
     voiceEvent(v,{type:'conversation.item.input_audio_transcription.completed',item_id:newer,
       transcript:'Actually, use the oven.'});
+    await Promise.resolve();await Promise.resolve();
+    if(!finishSave)throw Error('newer transcript save did not start');
+    voiceEvent(v,{type:'conversation.item.created',previous_item_id:newer,
+      item:{id:'out_late_provider_item',type:'message',role:'assistant'}});
+    if(sent.length)throw Error('older continuation raced in-flight transcript save');
+    finishSave();
     await v.work;
     const requests=sent.filter(event=>event.type==='response.create');
     if(posted.length!==1||requests.length!==1||
