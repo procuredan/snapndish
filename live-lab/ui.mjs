@@ -82,17 +82,83 @@ function drainVoice(v){
   if(v.behaviorVersion?.startsWith('stage1b-cooking-v2')||v.behaviorVersion?.startsWith('stage1b-meal-package-'))return drainVoiceV2(v);
   return drainVoiceLegacy(v);
 }
+function voiceContext(v,itemId){
+  if([...v.completedOutputs].some(id=>!v.contextOrder.includes(id)))return null;
+  const allowed=new Set([...v.acceptedUsers.keys(),...v.completedOutputs,...v.toolOutputs]);
+  const ids=v.contextOrder.filter(id=>allowed.has(id));
+  if(!ids.includes(itemId)||ids.length>128)return null;
+  return ids.map(id=>({type:'item_reference',id}));
+}
+function requestVoiceResponse(v,itemId,phase,options={}){
+  if(v.activeRequest||v.processingResponse||v.toolPending||v.dc?.readyState!=='open')return false;
+  if(session?.revision!==v.acceptedUsers.get(itemId)?.revision){
+    voiceDiagnostic(v,'input_skipped',{itemId,reason:'superseded'});return false;
+  }
+  const input=voiceContext(v,itemId);
+  if(!input){
+    if(v.contextOrder.includes(itemId)&&![...v.completedOutputs].some(id=>!v.contextOrder.includes(id))){
+      voiceDiagnostic(v,'response_ownership_rejected',{itemId,reason:'missing'});endVoice('ownership_error')
+    }
+    return false;
+  }
+  const requestId='req_'+crypto.randomUUID().replaceAll('-','');
+  const request={requestId,itemId,phase,responseId:null};
+  v.requests.set(requestId,request);v.activeRequest=request;
+  const response={conversation:'auto',input,
+    metadata:{snap_request_id:requestId,snap_origin_item_id:itemId,snap_phase:phase},
+    ...(options.tool_choice?{tool_choice:options.tool_choice}:{}),
+    ...(options.instructions?{instructions:options.instructions}:{})};
+  voiceDiagnostic(v,'response_requested',{itemId,requestId});
+  try{v.dc.send(JSON.stringify({type:'response.create',event_id:requestId,response}))}
+  catch{voiceOwnershipFailure(v,null,itemId,'failed');return false}
+  return true;
+}
+function scheduleVoiceResponse(v){
+  if(v.activeRequest||v.processingResponse||v.toolPending||v.pendingToolOutput)return;
+  while(v.pendingInputs.length){
+    const itemId=v.pendingInputs[0];
+    if(!v.acceptedUsers.has(itemId)){v.pendingInputs.shift();continue}
+    if(session?.revision!==v.acceptedUsers.get(itemId)?.revision){v.pendingInputs.shift();voiceDiagnostic(v,'input_skipped',{itemId,reason:'superseded'});continue}
+    if(v.pendingInputs.length>1){v.pendingInputs.shift();voiceDiagnostic(v,'input_skipped',{itemId,reason:'superseded'});continue}
+    if(requestVoiceResponse(v,itemId,'input'))v.pendingInputs.shift();
+    return;
+  }
+}
+function processVoiceInputs(v){
+  voiceQueue(v,async()=>{
+    while(v.inputCursor<v.committedInputs.length){
+      const itemId=v.committedInputs[v.inputCursor],result=v.inputResults.get(itemId);
+      if(!result)return;
+      v.inputCursor++;
+      if(result.outcome!=='nonempty'){
+        voiceDiagnostic(v,'input_skipped',{itemId,reason:result.outcome==='failed'?'failed':'missing'});
+        continue;
+      }
+      const accepted=await voicePost(v,{type:'user',itemId,transcript:result.transcript,usage:result.usage});
+      v.acceptedUsers.set(itemId,accepted);session.revision=accepted.revision;
+      bubble('user',result.transcript+'  · spoken');
+      v.pendingInputs.push(itemId);
+      scheduleVoiceResponse(v);
+    }
+  });
+}
 function drainVoiceV2(v){
-  if(v.toolPending)return;
-  while(v.responses.length&&v.userOrder.length){
-    const itemId=v.userOrder[0],transcript=v.transcripts.get(itemId);
-    if(!transcript||!v.acceptedUsers.has(itemId))return;
-    const response=v.responses.shift();
-    if(response.status!=='completed')continue;
+  if(v.toolPending||v.processingResponse)return;
+  while(v.responses.length){
+    const owned=v.responses.shift(),response=owned.response,itemId=owned.itemId;
+    if(response.status!=='completed'){scheduleVoiceResponse(v);continue}
+    if(!v.acceptedUsers.has(itemId)){
+      voiceDiagnostic(v,'response_ownership_rejected',{itemId,responseId:response.id,reason:'missing'});
+      endVoice('ownership_error');return;
+    }
+    v.processingResponse=true;
     const parts=(response.output||[]).flatMap(item=>item.content||[]);
     const spoken=parts.map(part=>part.transcript||part.text||'').join(' ').trim()||v.responseTexts.get(response.id)||'';
     const toolCall=(response.output||[]).find(item=>item.type==='function_call'&&['publish_meal_plan','update_cooking_progress'].includes(item.name));
     if(toolCall){
+      if(typeof toolCall.call_id!=='string'||!toolCall.call_id){
+        voiceOwnershipFailure(v,response.id,itemId,'missing');return;
+      }
       v.toolPending=true;
       const prior=v.pendingTool?.itemId===itemId?v.pendingTool:null;
       const attempt=(v.repairAttempts.get(itemId)||0)+1;
@@ -104,12 +170,12 @@ function drainVoiceV2(v){
           call:{name:toolCall.name,arguments:toolCall.arguments},usage:response.usage,fullMs});
         v.pendingTool={itemId,intro:result.accepted?intro:'',usages:usage};
         if(result.status==='stale_rejected'){
-          v.userOrder.shift();v.pendingTool=null;v.toolPending=false;
+          v.pendingTool=null;v.toolPending=false;v.processingResponse=false;
           if(voice===v&&generation===v.generation&&session?.id===v.sessionId){
             await load(v.sessionId,v.generation);
             status.textContent='Your shopping or meal state changed while Snap was planning. Ask Snap to continue from the current plan.';
           }
-          drainVoice(v);return;
+          drainVoice(v);scheduleVoiceResponse(v);return;
         }
         if(result.accepted&&voice===v&&generation===v.generation&&session?.id===v.sessionId){
           await load(v.sessionId,v.generation);
@@ -127,8 +193,10 @@ function drainVoiceV2(v){
           reason:result.reason||null,meal:result.accepted?session?.meal_plan?.meal:null,
           now:result.accepted?session?.cooking_progress?.current_action:null};
         if(v.dc?.readyState==='open'){
+          const outputId='item_'+crypto.randomUUID().replaceAll('-','');
+          v.pendingToolOutput={id:outputId,itemId};
           v.dc.send(JSON.stringify({type:'conversation.item.create',item:{type:'function_call_output',
-            call_id:toolCall.call_id,output:JSON.stringify(outcome)}}));
+            id:outputId,call_id:toolCall.call_id,output:JSON.stringify(outcome)}}));
           const guidance=result.accepted
             ? result.operation==='meal'
               ? 'The complete meal package, Shopping and recipe were accepted and are visible. Speak a brief natural transition naming the meal. Do not read the shopping list or recipe aloud.'
@@ -136,15 +204,15 @@ function drainVoiceV2(v){
             : canRepair
               ? 'The application rejected your proposal: '+result.reason+'. Correct the tool arguments and call the same tool again before claiming success. The full_plan and remaining_components fields must be JSON arrays or null, never strings.'
               : 'The application could not save that proposal: '+result.reason+'. Explain the problem plainly and give useful safe conversational help or one necessary question. Do not claim a plan, list, or cooking state was saved.';
-          v.dc.send(JSON.stringify({type:'response.create',response:{tool_choice:result.accepted||!canRepair?'none':'auto',instructions:guidance}}));
+          v.pendingToolOutput.guidance=guidance;
+          v.pendingToolOutput.toolChoice=result.accepted||!canRepair?'none':'auto';
         }
-        v.toolPending=false;
-        drainVoice(v);
+        v.toolPending=false;v.processingResponse=false;
+        drainVoice(v);scheduleVoiceResponse(v);
       });
       return;
     }
-    if(!spoken)continue;
-    v.userOrder.shift();
+    if(!spoken){v.processingResponse=false;scheduleVoiceResponse(v);continue}
     const prior=v.pendingTool?.itemId===itemId?v.pendingTool:null;
     v.pendingTool=null;v.repairAttempts.delete(itemId);
     const transcriptText=[prior?.intro,spoken].filter(Boolean).join('\n\n');
@@ -160,36 +228,77 @@ function drainVoiceV2(v){
         await load(v.sessionId,v.generation);
         status.textContent=result.status==='stale_rejected'?'An earlier spoken reply was superseded.':'Talk to Snap, or end Talk It to type.';
       }
+      v.processingResponse=false;drainVoice(v);scheduleVoiceResponse(v);
     });
+    return;
   }
+  scheduleVoiceResponse(v);
 }
 function drainVoiceLegacy(v){while(v.responses.length&&v.userOrder.length){const itemId=v.userOrder[0],transcript=v.transcripts.get(itemId);if(!transcript||!v.acceptedUsers.has(itemId))return;const response=v.responses.shift();if(response.status!=='completed')continue;const parts=(response.output||[]).flatMap(item=>item.content||[]);const text=parts.map(part=>part.transcript||part.text||'').join(' ').trim()||v.responseTexts.get(response.id)||'';const toolCall=(response.output||[]).find(item=>item.type==='function_call'&&['publish_meal_plan','update_cooking_progress'].includes(item.name));if(!text&&toolCall){v.pendingTool={call:toolCall,usage:response.usage};if(v.dc?.readyState==='open'){v.dc.send(JSON.stringify({type:'conversation.item.create',item:{type:'function_call_output',call_id:toolCall.call_id,output:JSON.stringify({status:'proposal_received'})}}));v.dc.send(JSON.stringify({type:'response.create',response:{tool_choice:'none',instructions:toolCall.name==='publish_meal_plan'?'Speak a brief natural transition and complete meal. The shopping list is shown visually; do not read the items aloud.':'Speak the useful Now guidance or answer naturally. The full coordinated plan is visible; do not read the plan or shopping list aloud, and do not demand routine acknowledgements.'}}))}continue}if(!text)continue;v.userOrder.shift();const chosenCall=toolCall||v.pendingTool?.call||null;const extraUsage=v.pendingTool?.usage;v.pendingTool=null;const usage=response.usage&&extraUsage?{...response.usage,input_tokens:(response.usage.input_tokens||0)+(extraUsage.input_tokens||0),output_tokens:(response.usage.output_tokens||0)+(extraUsage.output_tokens||0)}:response.usage;const firstUsefulMs=v.firstUseful.get(response.id)??null,fullMs=v.speechStopped?Math.round(performance.now()-v.speechStopped):null;voiceQueue(v,async()=>{const result=await voicePost(v,{type:'assistant',responseId:response.id,userItemId:itemId,transcript:text,firstUsefulMs,fullMs,usage,planCall:chosenCall?.name==='publish_meal_plan'?{name:chosenCall.name,arguments:chosenCall.arguments}:null,cookingCall:chosenCall?.name==='update_cooking_progress'?{name:chosenCall.name,arguments:chosenCall.arguments}:null});if(toolCall&&v.dc?.readyState==='open')v.dc.send(JSON.stringify({type:'conversation.item.create',item:{type:'function_call_output',call_id:toolCall.call_id,output:JSON.stringify({accepted:toolCall.name==='publish_meal_plan'?result.planAccepted===true:result.cookingAccepted===true})}}));if(result.status==='stale_rejected'){if(voice===v&&generation===v.generation&&session?.id===v.sessionId){await load(v.sessionId,v.generation);status.textContent='An earlier spoken reply was superseded.'}return}if(voice===v&&generation===v.generation&&session?.id===v.sessionId){await load(v.sessionId,v.generation);if(result.planAccepted||result.cookingAccepted)syncVoiceState(v);status.textContent='Talk to Snap, or end Talk It to type.'}})}}
 function voiceDiagnostic(v,kind,details={}){
   try{
     const item={seq:(v.diagnosticSeq=(v.diagnosticSeq||0)+1),
       ms:Math.min(3600000,Math.max(0,Math.round(performance.now()-(v.diagnosticStarted??=performance.now())))),kind};
-    for(const key of ['itemId','responseId'])if(typeof details[key]==='string'&&/^[A-Za-z0-9_-]{4,80}$/.test(details[key]))item[key]=details[key];
+    for(const key of ['itemId','responseId','requestId','outputId'])if(typeof details[key]==='string'&&/^[A-Za-z0-9_-]{4,80}$/.test(details[key]))item[key]=details[key];
     if(['in_progress','completed','cancelled','failed','incomplete','other'].includes(details.status))item.status=details.status;
     if(['new','connecting','connected','disconnected','failed','closed','checking','completed'].includes(details.connection))item.connection=details.connection;
     if(['empty','nonempty','failed'].includes(details.outcome))item.outcome=details.outcome;
+    if(['turn_detected','client_cancelled','max_output_tokens','content_filter','unknown','mismatch','missing','superseded','failed'].includes(details.reason))item.reason=details.reason;
     const events=v.diagnostics??=[];
     if(events.length===64){events.splice(8,1);v.diagnosticDropped=(v.diagnosticDropped||0)+1}
     events.push(item);
   }catch{/* Diagnostics cannot affect Talk It. */}
 }
+function rememberVoiceItem(v,e){
+  const id=e.item?.id;if(!id)return;
+  if(v.contextOrder.includes(id))return;
+  const previous=e.previous_item_id;
+  if(previous&&previous!=='root'&&!v.contextOrder.includes(previous)){
+    voiceDiagnostic(v,'response_ownership_rejected',{itemId:id,reason:'missing'});
+    endVoice('ownership_error');return;
+  }
+  if(previous==='root')v.contextOrder.unshift(id);
+  else if(previous){v.contextOrder.splice(v.contextOrder.indexOf(previous)+1,0,id)}
+  else v.contextOrder.push(id);
+  if(v.contextOrder.length>128){endVoice('ownership_error');return}
+  if(e.item.type==='message'&&e.item.role==='user')voiceDiagnostic(v,'input_item_created',{itemId:id});
+  if(v.pendingToolOutput?.id===id){
+    const continuation=v.pendingToolOutput;v.pendingToolOutput=null;v.toolOutputs.add(id);
+    voiceDiagnostic(v,'tool_output_created',{itemId:continuation.itemId,outputId:id});
+    if(!requestVoiceResponse(v,continuation.itemId,'continuation',
+      {instructions:continuation.guidance,tool_choice:continuation.toolChoice}))
+      scheduleVoiceResponse(v);
+  }else scheduleVoiceResponse(v);
+}
+function voiceOwnershipFailure(v,responseId,itemId,reason){
+  voiceDiagnostic(v,'response_ownership_rejected',{responseId,itemId,reason});
+  v.failureCode='VOICE_OWNERSHIP_ERROR';v.syncFailed=true;
+  endVoice('ownership_error');
+}
+function ownedVoiceResponse(v,response){
+  const metadata=response?.metadata,requestId=metadata?.snap_request_id;
+  const request=v.requests.get(requestId);
+  if(!request||request!==v.activeRequest||metadata.snap_origin_item_id!==request.itemId||
+    metadata.snap_phase!==request.phase||typeof response.conversation_id!=='string'||!response.conversation_id){
+    voiceOwnershipFailure(v,response?.id,metadata?.snap_origin_item_id,'mismatch');return null;
+  }
+  return request;
+}
 function voiceEvent(v,e){if(voice!==v||generation!==v.generation)return;
 if(e.type==='input_audio_buffer.speech_started'){voiceDiagnostic(v,'speech_started');v.speechStopped=null;status.textContent='Listening…'}
 else if(e.type==='input_audio_buffer.speech_stopped'){voiceDiagnostic(v,'speech_stopped');v.speechStopped=performance.now();status.textContent='Snap is listening and thinking…'}
-else if(e.type==='input_audio_buffer.committed'&&e.item_id){voiceDiagnostic(v,'input_committed',{itemId:e.item_id});if(!v.userOrder.includes(e.item_id))v.userOrder.push(e.item_id)}
-else if(e.type==='conversation.item.input_audio_transcription.completed'&&e.item_id){voiceDiagnostic(v,'transcription_completed',{itemId:e.item_id,outcome:e.transcript?.trim()?'nonempty':'empty'});if(!v.userOrder.includes(e.item_id))v.userOrder.push(e.item_id);v.transcripts.set(e.item_id,e.transcript||'');if(e.transcript?.trim()){bubble('user',e.transcript+'  · spoken');voiceQueue(v,async()=>{const accepted=await voicePost(v,{type:'user',itemId:e.item_id,transcript:e.transcript,usage:e.usage});v.acceptedUsers.set(e.item_id,accepted);session.revision=accepted.revision;drainVoice(v)})}else{v.syncFailed=true;v.failureCode='EMPTY_TRANSCRIPT';status.textContent='Speech was not clear enough to save. Talk It is ending so the transcript stays accurate.';endVoice('empty_transcript')}}
-else if(e.type==='conversation.item.input_audio_transcription.failed')voiceDiagnostic(v,'transcription_failed',{itemId:e.item_id,outcome:'failed'});
-else if(e.type==='response.created'&&e.response?.id)voiceDiagnostic(v,'response_created',{responseId:e.response.id,status:'in_progress'});
-else if(e.type==='response.output_audio_transcript.delta'&&e.response_id&&e.delta){v.diagnosticFirstAudio??=new Set();if(!v.diagnosticFirstAudio.has(e.response_id)){v.diagnosticFirstAudio.add(e.response_id);voiceDiagnostic(v,'audio_transcript_started',{responseId:e.response_id})}const prior=v.responseTexts.get(e.response_id)||'';v.responseTexts.set(e.response_id,prior+e.delta);if(!v.firstUseful.has(e.response_id)&&v.speechStopped)v.firstUseful.set(e.response_id,Math.round(performance.now()-v.speechStopped));if(v.awaitingUsefulSpeech&&/\S/.test(e.delta)){recordVisibleMetric(v.awaitingUsefulSpeech.kind,v.awaitingUsefulSpeech.turnId,v.awaitingUsefulSpeech.started);v.awaitingUsefulSpeech=null}if(!v.partial){v.partial=bubble('snap','');v.partialResponseId=e.response_id}if(v.partialResponseId===e.response_id)v.partial.textContent=displayText(v.responseTexts.get(e.response_id));status.textContent='Snap is speaking…'}
+else if(e.type==='input_audio_buffer.committed'&&e.item_id){voiceDiagnostic(v,'input_committed',{itemId:e.item_id});if(!v.committedInputs.includes(e.item_id)){v.committedInputs.push(e.item_id);processVoiceInputs(v)}}
+else if(e.type==='conversation.item.created'||e.type==='conversation.item.added')rememberVoiceItem(v,e);
+else if(e.type==='conversation.item.input_audio_transcription.completed'&&e.item_id){const outcome=e.transcript?.trim()?'nonempty':'empty';voiceDiagnostic(v,'transcription_completed',{itemId:e.item_id,outcome});if(!v.inputResults.has(e.item_id)){v.inputResults.set(e.item_id,{outcome,transcript:e.transcript||'',usage:e.usage});processVoiceInputs(v)}if(outcome==='empty')status.textContent='I did not catch that. You can keep talking.'}
+else if(e.type==='conversation.item.input_audio_transcription.failed'&&e.item_id){voiceDiagnostic(v,'transcription_failed',{itemId:e.item_id,outcome:'failed'});if(!v.inputResults.has(e.item_id)){v.inputResults.set(e.item_id,{outcome:'failed'});processVoiceInputs(v)}}
+else if(e.type==='response.created'&&e.response?.id){const owner=ownedVoiceResponse(v,e.response);if(owner){if(owner.responseId&&owner.responseId!==e.response.id){voiceOwnershipFailure(v,e.response.id,owner.itemId,'mismatch');return}owner.responseId=e.response.id;v.responseOwners.set(e.response.id,owner);voiceDiagnostic(v,'response_created',{responseId:e.response.id,itemId:owner.itemId,requestId:owner.requestId,status:'in_progress'})}}
+else if((e.type==='response.output_item.added'||e.type==='response.output_item.done')&&e.response_id&&e.item?.id){voiceDiagnostic(v,e.type.endsWith('added')?'response_output_started':'response_output_done',{responseId:e.response_id,outputId:e.item.id});v.outputOwners.set(e.item.id,e.response_id)}
+else if(e.type==='response.output_audio_transcript.delta'&&e.response_id&&e.delta){if(!v.responseOwners.has(e.response_id)){voiceOwnershipFailure(v,e.response_id,null,'missing');return}v.diagnosticFirstAudio??=new Set();if(!v.diagnosticFirstAudio.has(e.response_id)){v.diagnosticFirstAudio.add(e.response_id);voiceDiagnostic(v,'audio_transcript_started',{responseId:e.response_id})}const prior=v.responseTexts.get(e.response_id)||'';v.responseTexts.set(e.response_id,prior+e.delta);if(!v.firstUseful.has(e.response_id)&&v.speechStopped)v.firstUseful.set(e.response_id,Math.round(performance.now()-v.speechStopped));if(v.awaitingUsefulSpeech&&/\S/.test(e.delta)){recordVisibleMetric(v.awaitingUsefulSpeech.kind,v.awaitingUsefulSpeech.turnId,v.awaitingUsefulSpeech.started);v.awaitingUsefulSpeech=null}if(!v.partial){v.partial=bubble('snap','');v.partialResponseId=e.response_id}if(v.partialResponseId===e.response_id)v.partial.textContent=displayText(v.responseTexts.get(e.response_id));status.textContent='Snap is speaking…'}
 else if(e.type==='response.output_audio_transcript.done'&&e.response_id){voiceDiagnostic(v,'audio_transcript_done',{responseId:e.response_id});if(e.transcript)v.responseTexts.set(e.response_id,e.transcript)}
-else if(e.type==='response.done'&&e.response?.id){voiceDiagnostic(v,'response_done',{responseId:e.response.id,status:e.response.status});if((v.behaviorVersion?.startsWith('stage1b-cooking-v2')||v.behaviorVersion?.startsWith('stage1b-meal-package-'))&&e.response.output?.some(item=>item.type==='function_call')&&v.partial?.parentElement)v.partial.parentElement.remove();v.responses.push(e.response);v.partial=null;v.partialResponseId=null;drainVoice(v)}
-else if(e.type==='error'){voiceDiagnostic(v,'provider_error');status.textContent='Talk It had a connection error. End Talk and try again.'}}
+else if(e.type==='response.done'&&e.response?.id){const response=e.response;if(v.doneResponses.has(response.id))return;const owner=ownedVoiceResponse(v,response);if(!owner||owner.responseId!==response.id){voiceOwnershipFailure(v,response.id,owner?.itemId,'mismatch');return}if(response.status==='completed'&&(!Array.isArray(response.output)||response.output.some(item=>typeof item.id!=='string'||!item.id))){voiceOwnershipFailure(v,response.id,owner.itemId,'missing');return}v.doneResponses.add(response.id);v.activeRequest=null;const reason=['turn_detected','client_cancelled','max_output_tokens','content_filter'].includes(response.status_details?.reason)?response.status_details.reason:'unknown';voiceDiagnostic(v,'response_done',{responseId:response.id,itemId:owner.itemId,requestId:owner.requestId,status:response.status,reason});if(response.status==='completed')for(const item of response.output||[])v.completedOutputs.add(item.id);if((response.status!=='completed'||((v.behaviorVersion?.startsWith('stage1b-cooking-v2')||v.behaviorVersion?.startsWith('stage1b-meal-package-'))&&response.output?.some(item=>item.type==='function_call')))&&v.partial?.parentElement)v.partial.parentElement.remove();v.responses.push({response,itemId:owner.itemId});v.partial=null;v.partialResponseId=null;drainVoice(v)}
+else if(e.type==='error'){voiceDiagnostic(v,'provider_error',{requestId:v.activeRequest?.requestId,itemId:v.activeRequest?.itemId,reason:'failed'});v.syncFailed=true;v.failureCode='REALTIME_PROVIDER_ERROR';endVoice('provider_error')}}
 async function endVoice(reason='manual'){const v=voice;if(!v)return;voiceDiagnostic(v,'shutdown');voice=null;talk.disabled=true;talk.textContent='Talk It';input.disabled=false;photo.disabled=false;send.disabled=false;try{let pending;do{pending=v.work;await pending}while(v.work!==pending);if(v.id)await fetch('/api/sessions/'+encodeURIComponent(v.sessionId)+'/voice/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voiceSessionId:v.id,failureCode:v.failureCode,diagnostics:{stopReason:reason,dropped:v.diagnosticDropped||0,events:v.diagnostics||[]}})})}catch{}finally{v.mic?.getTracks().forEach(track=>track.stop());v.dc?.close();v.pc?.close();snapAudio.srcObject=null;talk.disabled=false;if(session?.id===v.sessionId)await load(v.sessionId,generation);status.textContent=v.syncFailed?'Voice ended with an unsaved transcript. Review the conversation.':'Talk It ended. Continue by typing or start Talk It again.'}}
-async function startVoice(){if(!stage1b||voice)return;if(!session){await create();if(!session)return}if(pending()){status.textContent='Wait for Snap to finish the pending reply first.';return}const v={sessionId:session.id,generation,work:Promise.resolve(),userOrder:[],responses:[],transcripts:new Map(),acceptedUsers:new Map(),responseTexts:new Map(),firstUseful:new Map(),speechStopped:null,syncFailed:false,failureCode:null,pendingTool:null,toolPending:false,repairAttempts:new Map(),awaitingUsefulSpeech:null,baseInstructions:null,cookingInstructions:null,behaviorVersion:null};voice=v;talk.disabled=true;send.disabled=true;input.disabled=true;photo.disabled=true;status.textContent='Connecting Talk It…';try{v.mic=await navigator.mediaDevices.getUserMedia({audio:true});if(voice!==v)throw Error('Voice session changed');v.pc=new RTCPeerConnection();v.pc.onconnectionstatechange=()=>voiceDiagnostic(v,'peer_connection_state',{connection:v.pc.connectionState});v.pc.oniceconnectionstatechange=()=>voiceDiagnostic(v,'ice_connection_state',{connection:v.pc.iceConnectionState});v.mic.getAudioTracks()[0].onended=()=>voiceDiagnostic(v,'mic_ended');v.pc.ontrack=e=>{snapAudio.srcObject=e.streams[0];snapAudio.play().catch(()=>status.textContent='Tap Talk It to enable audio playback.')};v.pc.addTrack(v.mic.getAudioTracks()[0],v.mic);v.dc=v.pc.createDataChannel('oai-events');v.dc.onmessage=message=>{try{voiceEvent(v,JSON.parse(message.data))}catch{status.textContent='Could not read a voice event.'}};v.dc.onopen=()=>voiceDiagnostic(v,'data_channel_open');v.dc.onerror=()=>voiceDiagnostic(v,'data_channel_error');v.dc.onclose=()=>{if(voice===v){voiceDiagnostic(v,'data_channel_closed');endVoice('data_channel_closed')}};const offer=await v.pc.createOffer();await v.pc.setLocalDescription(offer);if(v.pc.iceGatheringState!=='complete')await new Promise(resolve=>{const changed=()=>{if(v.pc.iceGatheringState==='complete'){clearTimeout(timeout);v.pc.removeEventListener('icegatheringstatechange',changed);resolve()}};const timeout=setTimeout(()=>{v.pc.removeEventListener('icegatheringstatechange',changed);resolve()},4000);v.pc.addEventListener('icegatheringstatechange',changed)});const r=await fetch('/api/sessions/'+encodeURIComponent(v.sessionId)+'/voice/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sdp:v.pc.localDescription.sdp,expectedRevision:session.revision})});const result=await r.json();if(!r.ok)throw Error(result.error||'Talk It could not connect');v.id=result.voiceSessionId;v.baseInstructions=result.syncInstructions||null;v.cookingInstructions=result.cookingSyncInstructions||null;v.behaviorVersion=result.behaviorVersion||null;await v.pc.setRemoteDescription({type:'answer',sdp:result.sdp});voiceDiagnostic(v,'voice_connected');if(voice!==v)throw Error('Voice session changed');talk.disabled=false;talk.textContent='End Talk It';status.textContent='Talk to Snap. Your words and Snap’s reply will appear here.'}catch(error){if(voice===v){const reason=error.message||'Talk It could not start.';await endVoice('connect_error');status.textContent=reason}}}
+async function startVoice(){if(!stage1b||voice)return;if(!session){await create();if(!session)return}if(pending()){status.textContent='Wait for Snap to finish the pending reply first.';return}const v={sessionId:session.id,generation,work:Promise.resolve(),userOrder:[],responses:[],transcripts:new Map(),acceptedUsers:new Map(),responseTexts:new Map(),firstUseful:new Map(),speechStopped:null,syncFailed:false,failureCode:null,pendingTool:null,toolPending:false,repairAttempts:new Map(),awaitingUsefulSpeech:null,baseInstructions:null,cookingInstructions:null,behaviorVersion:null,committedInputs:[],inputResults:new Map(),inputCursor:0,pendingInputs:[],contextOrder:[],completedOutputs:new Set(),toolOutputs:new Set(),requests:new Map(),responseOwners:new Map(),outputOwners:new Map(),doneResponses:new Set(),activeRequest:null,processingResponse:false,pendingToolOutput:null};voice=v;talk.disabled=true;send.disabled=true;input.disabled=true;photo.disabled=true;status.textContent='Connecting Talk It…';try{v.mic=await navigator.mediaDevices.getUserMedia({audio:true});if(voice!==v)throw Error('Voice session changed');v.pc=new RTCPeerConnection();v.pc.onconnectionstatechange=()=>voiceDiagnostic(v,'peer_connection_state',{connection:v.pc.connectionState});v.pc.oniceconnectionstatechange=()=>voiceDiagnostic(v,'ice_connection_state',{connection:v.pc.iceConnectionState});v.mic.getAudioTracks()[0].onended=()=>voiceDiagnostic(v,'mic_ended');v.pc.ontrack=e=>{snapAudio.srcObject=e.streams[0];snapAudio.play().catch(()=>status.textContent='Tap Talk It to enable audio playback.')};v.pc.addTrack(v.mic.getAudioTracks()[0],v.mic);v.dc=v.pc.createDataChannel('oai-events');v.dc.onmessage=message=>{try{voiceEvent(v,JSON.parse(message.data))}catch{status.textContent='Could not read a voice event.'}};v.dc.onopen=()=>voiceDiagnostic(v,'data_channel_open');v.dc.onerror=()=>voiceDiagnostic(v,'data_channel_error');v.dc.onclose=()=>{if(voice===v){voiceDiagnostic(v,'data_channel_closed');endVoice('data_channel_closed')}};const offer=await v.pc.createOffer();await v.pc.setLocalDescription(offer);if(v.pc.iceGatheringState!=='complete')await new Promise(resolve=>{const changed=()=>{if(v.pc.iceGatheringState==='complete'){clearTimeout(timeout);v.pc.removeEventListener('icegatheringstatechange',changed);resolve()}};const timeout=setTimeout(()=>{v.pc.removeEventListener('icegatheringstatechange',changed);resolve()},4000);v.pc.addEventListener('icegatheringstatechange',changed)});const r=await fetch('/api/sessions/'+encodeURIComponent(v.sessionId)+'/voice/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sdp:v.pc.localDescription.sdp,expectedRevision:session.revision})});const result=await r.json();if(!r.ok)throw Error(result.error||'Talk It could not connect');v.id=result.voiceSessionId;v.baseInstructions=result.syncInstructions||null;v.cookingInstructions=result.cookingSyncInstructions||null;v.behaviorVersion=result.behaviorVersion||null;await v.pc.setRemoteDescription({type:'answer',sdp:result.sdp});voiceDiagnostic(v,'voice_connected');if(voice!==v)throw Error('Voice session changed');talk.disabled=false;talk.textContent='End Talk It';status.textContent='Talk to Snap. Your words and Snap’s reply will appear here.'}catch(error){if(voice===v){const reason=error.message||'Talk It could not start.';await endVoice('connect_error');status.textContent=reason}}}
 talk.onclick=()=>voice?endVoice():startVoice();
 if(stage1b)document.getElementById('recover-talk').onclick=async()=>{if(!session?.active_voice_id)return;const id=session.id,voiceSessionId=session.active_voice_id;const r=await fetch('/api/sessions/'+encodeURIComponent(id)+'/voice/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voiceSessionId})});if(r.ok){await load(id,generation);status.textContent='Talk It ended. You can continue here.'}else status.textContent='Could not end Talk It. Refresh and try again.'};
 function pushKey(base64url){const binary=atob(base64url.replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from(binary,c=>c.charCodeAt(0))}

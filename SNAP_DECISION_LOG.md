@@ -247,6 +247,13 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 - **Stop boundary:** If the event evidence exposes broader response scheduling or association ambiguity, stop before a speculative recovery change and return evidence to Architecture. The pre-change Stage 1B Worker `fb3cdc64-b5ea-44a9-86a0-2696d1a619f3` is immediate code rollback; routine code rollback does not restore D1.
 - **Supersedes:** None. Existing Stage 1B and production safeguards remain binding.
 
+### SNDISH-028 — Talk It response ownership staging experiment
+
+- **Date / owner:** 2026-10-20; Snap n Dish product owner, via Talk It Reliability Engineering GO.
+- **Decision:** Start from diagnostic source `9b8c6d6010f8f2cf2518ae146cce6e45328a733e`. Verify the Realtime provider contract for explicit input references, request metadata, default-conversation output, automatic spoken interruption and tool continuation before changing scheduling. If verified, test bounded identity-based response ownership and nonterminal empty transcription on isolated Stage 1B only, with `create_response:false` and `interrupt_response:true` under the existing semantic VAD. Preserve the current model, voice, transcription model, culinary behavior, automatic meal acceptance, migration 0011 and dashboard correction.
+- **Proof / stop:** Require cancellation/request/output diagnostics, order and currentness tests for deer, catfish and trout sequences, full local/browser suite, exact-source CI, isolated staging and a real microphone journey. Unknown ownership fails closed. Stop if the contract or live behavior cannot establish safe input/response/tool association or natural interruption. Preserve Worker `c0cb6eef-9325-48a4-a766-da1753cb5f38` as code rollback; routine code rollback does not restore D1. Production and Milestone 2 remain out of scope.
+- **Supersedes:** SNDISH-027 only for its response-scheduling stop boundary and approved VAD response-creation setting. Its privacy, state-authority and release safeguards remain binding.
+
 ## Open decisions — no authority may be invented
 
 1. Stage 1A quality result and owner benchmark/human review; the current prototype tests are not that decision.

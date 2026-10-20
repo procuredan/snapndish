@@ -63,36 +63,44 @@ test('real browser executes voice state sync, tool-result ordering and accepted 
       cookingInstructions:'Cooking behavior',dc:channel,work:Promise.resolve(),toolPending:false,
       pendingTool:null,repairAttempts:new Map(),awaitingUsefulSpeech:null,
       userOrder:[item],transcripts:new Map([[item,"Let's cook."]]),
-      acceptedUsers:new Map([[item,{turnId,revision:1}]]),responses:[{id:'response_tool_1',status:'completed',
+      committedInputs:[item],inputResults:new Map(),inputCursor:1,pendingInputs:[],contextOrder:[item],
+      completedOutputs:new Set(),toolOutputs:new Set(),requests:new Map(),responseOwners:new Map(),
+      outputOwners:new Map(),doneResponses:new Set(),activeRequest:null,processingResponse:false,
+      pendingToolOutput:null,
+      acceptedUsers:new Map([[item,{turnId,revision:1}]]),responses:[{itemId:item,response:{id:'response_tool_1',status:'completed',
         output:[{type:'function_call',call_id:'call_1',name:'update_cooking_progress',
           arguments:JSON.stringify({current_action:cooking.current_action,full_plan:cooking.full_plan,
             remaining_components:null,customer_report:null,equipment_change:null})}],
-        usage:{input_tokens:30,output_tokens:20}}],responseTexts:new Map(),firstUseful:new Map(),
+        usage:{input_tokens:30,output_tokens:20}}}],responseTexts:new Map(),firstUseful:new Map(),
       speechStopped:performance.now(),syncFailed:false};
     voice=v;
     drainVoice(v);await v.work;
     if(events[0]!=='proposal')throw Error('proposal was not first');
     const outputAt=sent.findIndex(event=>event.type==='conversation.item.create'&&
       event.item.type==='function_call_output');
+    const outputId=sent[outputAt]?.item.id;
+    voiceEvent(v,{type:'conversation.item.created',previous_item_id:item,
+      item:{id:outputId,type:'function_call_output',call_id:'call_1'}});
     const speechAt=sent.findIndex((event,index)=>index>outputAt&&event.type==='response.create');
     if(outputAt<0||speechAt<0||sent[outputAt].item.call_id!=='call_1')
       throw Error('real tool output did not precede speech continuation');
     if(nowPanel.hidden||!nowText.textContent.includes('Start the rice')||fullPlan.hidden)
       throw Error('accepted cooking state did not render');
-    v.responses.push({id:'response_speech_1',status:'completed',output:[{type:'message',
+    v.activeRequest=null;
+    v.responses.push({itemId:item,response:{id:'response_speech_1',status:'completed',output:[{type:'message',
       content:[{transcript:'Start the rice, then slice the cucumber while it cooks.'}]}],
-      usage:{input_tokens:10,output_tokens:10}});
+      usage:{input_tokens:10,output_tokens:10}}});
     drainVoice(v);await v.work;
-    if(events.at(-1)!=='assistant'||v.userOrder.length)throw Error('spoken continuation not saved');
+    if(events.at(-1)!=='assistant')throw Error('spoken continuation not saved');
     const second='audio_item_2';
     v.userOrder.push(second);v.transcripts.set(second,'The cucumber is missing; revise the plan.');
     v.acceptedUsers.set(second,{turnId,revision:2});
-    v.responses.push({id:'response_tool_speech',status:'completed',output:[
+    v.responses.push({itemId:second,response:{id:'response_tool_speech',status:'completed',output:[
       {type:'message',content:[{transcript:'I can adjust that.'}]},
       {type:'function_call',call_id:'call_2',name:'update_cooking_progress',
         arguments:JSON.stringify({current_action:'Skip cucumber and dress the greens instead.',
           full_plan:cooking.full_plan,remaining_components:null,customer_report:null,equipment_change:null})}],
-      usage:{input_tokens:30,output_tokens:20}});
+      usage:{input_tokens:30,output_tokens:20}}});
     const before=events.length;
     drainVoice(v);await v.work;
     if(events.length!==before+1||events.at(-1)!=='proposal')

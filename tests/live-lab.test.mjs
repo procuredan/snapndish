@@ -511,6 +511,8 @@ test('cooking quality v5 replaces compression guidance while retaining retail ac
     assert.deepEqual(setup.tools.map(tool => tool.name), ['publish_meal_plan', 'update_cooking_progress']);
     assert.ok(setup.tools.every(tool => !Object.hasOwn(tool, 'strict')));
     assert.deepEqual(setup.tools[0].parameters, COOKING_QUALITY_MEAL_PACKAGE_TOOL.parameters);
+    assert.deepEqual(setup.audio.input.turn_detection,
+      { type: 'semantic_vad', create_response: false, interrupt_response: true });
     return new Response('v=0\r\nanswer', { status: 201 });
   };
   try {
@@ -1464,28 +1466,34 @@ test('Talk It lifecycle diagnostics are bounded, private, idempotent, and cannot
     firstId = (await (await worker.fetch(req(`/api/sessions/${id}/voice/start`, 'POST',
       { sdp: 'v=0\r\noffer', expectedRevision: 0 }, cookie), e, context())).json()).voiceSessionId;
   } finally { globalThis.fetch = original; }
-  const diagnostic = { stopReason: 'empty_transcript', dropped: 0, events: [
+  const diagnostic = { stopReason: 'manual', dropped: 0, events: [
     { seq: 1, ms: 0, kind: 'voice_connected' },
-    { seq: 2, ms: 200, kind: 'response_created', responseId: 'resp_catfish_1', status: 'in_progress' },
-    { seq: 3, ms: 400, kind: 'response_done', responseId: 'resp_catfish_1', status: 'cancelled' },
-    { seq: 4, ms: 500, kind: 'transcription_completed', itemId: 'item_empty_1', outcome: 'empty',
+    { seq: 2, ms: 150, kind: 'response_requested', requestId: 'req_catfish_1', itemId: 'item_catfish_1' },
+    { seq: 3, ms: 200, kind: 'response_created', requestId: 'req_catfish_1', itemId: 'item_catfish_1', responseId: 'resp_catfish_1', status: 'in_progress' },
+    { seq: 4, ms: 280, kind: 'response_output_started', responseId: 'resp_catfish_1', outputId: 'out_catfish_1' },
+    { seq: 5, ms: 400, kind: 'response_done', requestId: 'req_catfish_1', itemId: 'item_catfish_1', responseId: 'resp_catfish_1', status: 'cancelled', reason: 'turn_detected' },
+    { seq: 6, ms: 500, kind: 'transcription_completed', itemId: 'item_empty_1', outcome: 'empty',
       transcript: 'private catfish words', credentials: 'sk-private-test' },
-    { seq: 5, ms: 501, kind: 'shutdown' },
+    { seq: 7, ms: 501, kind: 'input_skipped', itemId: 'item_empty_1', reason: 'missing' },
+    { seq: 8, ms: 700, kind: 'shutdown' },
   ] };
   const stop = await worker.fetch(req(`/api/sessions/${id}/voice/stop`, 'POST',
-    { voiceSessionId: firstId, failureCode: 'EMPTY_TRANSCRIPT', diagnostics: diagnostic }, cookie), e, context());
+    { voiceSessionId: firstId, diagnostics: diagnostic }, cookie), e, context());
   assert.equal(stop.status, 200);
   assert.equal(e.DB.raw.prepare('SELECT active_voice_id FROM sessions WHERE id=?').get(id).active_voice_id, null);
   const saved = e.DB.raw.prepare("SELECT details_json FROM state_events WHERE kind='voice_lifecycle'").get();
   assert.ok(saved);
   assert.doesNotMatch(saved.details_json, /private catfish|sk-private|credentials|"transcript":/);
   assert.deepEqual(JSON.parse(saved.details_json), { voice_session_id: firstId, version: 1,
-    stop_reason: 'empty_transcript', dropped: 0, events: [
+    stop_reason: 'manual', dropped: 0, events: [
       { seq: 1, ms: 0, kind: 'voice_connected' },
-      { seq: 2, ms: 200, kind: 'response_created', response_id: 'resp_catfish_1', status: 'in_progress' },
-      { seq: 3, ms: 400, kind: 'response_done', response_id: 'resp_catfish_1', status: 'cancelled' },
-      { seq: 4, ms: 500, kind: 'transcription_completed', item_id: 'item_empty_1', outcome: 'empty' },
-      { seq: 5, ms: 501, kind: 'shutdown' },
+      { seq: 2, ms: 150, kind: 'response_requested', item_id: 'item_catfish_1', request_id: 'req_catfish_1' },
+      { seq: 3, ms: 200, kind: 'response_created', item_id: 'item_catfish_1', response_id: 'resp_catfish_1', request_id: 'req_catfish_1', status: 'in_progress' },
+      { seq: 4, ms: 280, kind: 'response_output_started', response_id: 'resp_catfish_1', output_id: 'out_catfish_1' },
+      { seq: 5, ms: 400, kind: 'response_done', item_id: 'item_catfish_1', response_id: 'resp_catfish_1', request_id: 'req_catfish_1', status: 'cancelled', reason: 'turn_detected' },
+      { seq: 6, ms: 500, kind: 'transcription_completed', item_id: 'item_empty_1', outcome: 'empty' },
+      { seq: 7, ms: 501, kind: 'input_skipped', item_id: 'item_empty_1', reason: 'missing' },
+      { seq: 8, ms: 700, kind: 'shutdown' },
     ] });
   await worker.fetch(req(`/api/sessions/${id}/voice/stop`, 'POST',
     { voiceSessionId: firstId, diagnostics: diagnostic }, cookie), e, context());
