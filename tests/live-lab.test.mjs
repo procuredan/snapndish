@@ -1528,6 +1528,42 @@ test('Talk It lifecycle diagnostics are bounded, private, idempotent, and cannot
   assert.equal(e.DB.raw.prepare("SELECT COUNT(*) AS n FROM state_events WHERE kind='voice_lifecycle'").get().n, 1);
 });
 
+test('a full bounded Talk It diagnostic cannot prevent voice shutdown', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-meal-package-v5.1';
+  const { id, cookie } = await createVisitorSession(e, '');
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => new Response('v=0\r\nanswer', { status: 201 });
+  let voiceSessionId;
+  try {
+    voiceSessionId = (await (await worker.fetch(req(`/api/sessions/${id}/voice/start`, 'POST',
+      { sdp: 'v=0\r\noffer', expectedRevision: 0 }, cookie), e, context())).json()).voiceSessionId;
+  } finally { globalThis.fetch = original; }
+  const providerId = 'x'.repeat(128);
+  const events = Array.from({ length: 64 }, (_, index) => ({
+    seq: index + 1, ms: index * 10, kind: 'provider_error',
+    itemId: providerId, responseId: providerId, requestId: providerId,
+    outputId: providerId, eventId: providerId, errorEventId: providerId, callId: providerId,
+    errorType: 'x'.repeat(64), errorCode: 'x'.repeat(64), errorParam: 'x'.repeat(80),
+    status: 'in_progress', connection: 'disconnected', outcome: 'nonempty',
+    reason: 'max_output_tokens', phase: 'continuation', source: 'mic_settings',
+    turnDetection: 'semantic_vad', clientVersion: 'talk-it-diagnostics-v2',
+    createResponse: true, interruptResponse: true, echoCancellation: true,
+    noiseSuppression: true, autoGainControl: true,
+  }));
+  const input = { voiceSessionId, diagnostics: { stopReason: 'manual', dropped: 3, events } };
+  assert.ok(JSON.stringify(input).length > 16_000);
+  assert.ok(JSON.stringify(input).length < 120_000);
+  const response = await worker.fetch(req(`/api/sessions/${id}/voice/stop`, 'POST', input, cookie), e, context());
+  assert.equal(response.status, 200);
+  assert.equal(e.DB.raw.prepare('SELECT closed_at FROM voice_sessions WHERE id=?').get(voiceSessionId).closed_at != null, true);
+  assert.equal(e.DB.raw.prepare('SELECT active_voice_id FROM sessions WHERE id=?').get(id).active_voice_id, null);
+  const saved = JSON.parse(e.DB.raw.prepare("SELECT details_json FROM state_events WHERE kind='voice_lifecycle'").get().details_json);
+  assert.equal(saved.events.length, 64);
+  assert.equal(saved.events[63].error_event_id, providerId);
+});
+
 test('Realtime initialization preserves only bounded provider diagnostics', async () => {
   const e = env();
   e.STAGE1B_ENABLED = 'true';

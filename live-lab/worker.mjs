@@ -125,9 +125,9 @@ function html(kind, env) {
     'Content-Security-Policy': `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; img-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
   } });
 }
-async function bodyJson(request) {
+async function bodyJson(request, maxLength = 16_000) {
   const raw = await request.text();
-  if (raw.length > 16_000) throw new Error('REQUEST_TOO_LARGE');
+  if (raw.length > maxLength) throw new Error('REQUEST_TOO_LARGE');
   try { return JSON.parse(raw); }
   catch { throw new Error('INVALID_JSON'); }
 }
@@ -1200,7 +1200,9 @@ function boundedVoiceDiagnostics(input) {
 }
 
 async function stopVoice(request, env, id) {
-  const input = await bodyJson(request);
+  // A bounded 64-event lifecycle summary can exceed the general API body cap.
+  // Keep voice closure independent of normal conversation request sizing.
+  const input = await bodyJson(request, 120_000);
   const voiceId = input.voiceSessionId, at = now();
   if (typeof voiceId !== 'string' || !/^[0-9a-f-]{36}$/i.test(voiceId)) return json({ error: 'INVALID_VOICE_SESSION' }, 400);
   const failureCode = input.failureCode == null ? null : input.failureCode;

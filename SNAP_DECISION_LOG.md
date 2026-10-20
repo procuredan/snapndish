@@ -262,6 +262,14 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 - **Release / stop:** Isolated Stage 1B only. Stop for recurrent unexplained provider errors, ownership or natural-interruption regressions, premature meal acceptance, damaged clear-choice behavior, or diagnostic interference. Require independent QA and physical microphone evidence before PM acceptance. Production and Milestone 2 remain excluded. Routine Worker rollback does not restore D1.
 - **Supersedes:** None; SNDISH-028 response ownership and earlier culinary/data safeguards remain binding.
 
+### SNDISH-030 — Bounded voice-stop body for Phase A diagnostics
+
+- **Date / owner:** 2026-10-20; engineering correction under the PM-approved SNDISH-029 diagnostic-failure boundary, identified during independent QA review.
+- **Decision:** Give only `/voice/stop` a 120,000-character JSON body cap so the maximal allowlisted 64-event lifecycle record can accompany a normal voice shutdown. Keep the general 16,000-character cap on other JSON endpoints and retain the existing 64-event schema and privacy allowlist. No migration or voice-behavior change is involved.
+- **Reason / proof:** A valid diagnostic body can exceed the general request cap, causing a rejected stop request and an active server-side voice session until expiry. A D1-compatible maximal-body regression must prove a successful stop, cleared active voice identity and preserved bounded diagnostics; rerun full browser-enabled tests and exact-source CI before replacing the diagnostic-only staging Worker. The owner microphone control must use the corrected Worker.
+- **Recovery / boundary:** Keep `20ba6552-9bbe-4de4-9098-3c64098a648e` as the control code rollback and the verified pre-deploy D1 recovery bookmark private. No routine D1 restore, Phase B activation, production deployment or Milestone 2 work follows from this correction.
+- **Supersedes:** None; this implements SNDISH-029's requirement that diagnostic failures not interfere with Talk It.
+
 ## Open decisions — no authority may be invented
 
 1. Stage 1A quality result and owner benchmark/human review; the current prototype tests are not that decision.
