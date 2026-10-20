@@ -36,3 +36,7 @@ Write down the existing system, its authoritative owner, the requested extension
 ## Out of scope unless separately authorized
 
 No Snap n Done provider, job, quote, routing/BID_READY, matching, offer, fee, tip, transfer, Stripe/payment, supply, marketplace SMS or Walter policy belongs here. Do not mutate Snap n Done, Procure, Walter, Clink Pass or their resources. Stage 1B includes the original proofs, the authorized next-flow and cooking choreography experiments, and V1 Dashboard Milestones 0–1. Do not build grocery commerce, a recipe corpus, native clients, a parent-profile service, advanced schedule orchestration, or the commercial-alpha application.
+
+## Mandatory handoff header and model/effort budget
+
+Follow the binding AI assignment routing rule in [SNAP_GLOBAL_RULES.md](SNAP_GLOBAL_RULES.md). Every copy-and-paste task directed to any other Snap n Dish chat must **begin inside the copied text** with **SEND TO, MODEL, EFFORT, TASK, AUTHORIZATION**. Recommend the lowest capable available model and effort; state why escalation is needed. Defaults: Architecture GPT-6 Sol / Medium; Engineering GPT-6.1 Sol / Medium; routine QA GPT-6 Luna / Light. Escalate only on evidence of task difficulty; do not substitute cheapness for correct safety, security or independent review. These are recommendations to the operator, not automatic model-setting changes.

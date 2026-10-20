@@ -286,3 +286,11 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 4. General product staging/prod resources, release artifact and rollback/restore procedure beyond this isolated Stage 1A Lab.
 5. Realtime voice, image, and notification providers and limits after the appropriate prototype gate.
 6. Owner-approved culinary quality, latency and full-session cost thresholds.
+
+### SNDISH-032 — Mandatory agent model and effort assignment headers
+
+- **Date / owner:** 2026-10-20; Snap n Dish product owner, explicit instruction to persist the operating rule in GitHub.
+- **Decision:** Every PM-to-agent or agent-to-agent copyable instruction must begin with SEND TO, MODEL, EFFORT, TASK, and AUTHORIZATION inside the assignment. Choose the least costly capable available model and thinking effort; default Architecture to GPT-6 Sol / Medium, Engineering to GPT-6.1 Sol / Medium, routine QA to GPT-6 Luna / Light, with evidence-based escalation. Name the reason for expensive escalation. Model/effort recommendations do not automatically change Codex UI settings.
+- **Reason:** Avoid repeated expensive high-effort analysis of routine tasks, prevent ambiguous handoffs, and reduce development token waste while maintaining correctness.
+- **Scope / proof:** Applies to all future Snap n Dish task handoffs, including other chats. A handoff lacking the header is incomplete and must be corrected before use. Never weaken food safety, privacy, security, acceptance gates, independent QA or release authorization to save tokens. This is governance only; no runtime or production change is authorized.
+- **Supersedes:** None.
