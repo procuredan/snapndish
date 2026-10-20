@@ -11,6 +11,64 @@ const chrome = [process.env.CHROME_PATH,
   '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable']
   .filter(Boolean).find(candidate => fs.existsSync(candidate));
 
+test('real browser stops queued voice saves after the first ordered transcript fails',
+  { skip: !process.env.SNAP_BROWSER_TEST && 'Set SNAP_BROWSER_TEST=1 to run Chrome' }, () => {
+    assert.ok(chrome, 'Chrome is required for the browser regression');
+    const fixture = String.raw`<script>
+(async()=>{
+  try{
+    const id='11111111-1111-4111-8111-111111111111';
+    const first='item_failed_save',second='item_later_save';
+    session={id,revision:0,turns:[],meal_plan:null,meal_revision:0,
+      shopping_revision:0,cooking_progress:null,cooking_revision:0};
+    const posts=[],sent=[];let stop;
+    window.fetch=async(url,options)=>{
+      if(url.endsWith('/voice/events')){posts.push(JSON.parse(options.body));
+        return new Response(JSON.stringify({error:'STALE_REVISION'}),{status:409})}
+      if(url.endsWith('/voice/stop')){stop=JSON.parse(options.body);return new Response('{}')}
+      if(url.endsWith('/api/sessions/'+id))return new Response(JSON.stringify(session));
+      throw Error('unexpected request '+url);
+    };
+    const v={id:'22222222-2222-4222-8222-222222222222',sessionId:id,generation,
+      behaviorVersion:'stage1b-meal-package-v5.1+voice-bridge-v2',work:Promise.resolve(),
+      dc:{readyState:'open',send:value=>sent.push(JSON.parse(value)),close(){}},
+      mic:{getTracks:()=>[{stop(){}}]},pc:{close(){}},
+      acceptedUsers:new Map(),committedInputs:[],inputResults:new Map(),inputCursor:0,pendingInputs:[],
+      contextOrder:[],completedOutputs:new Set(),toolOutputs:new Set(),requests:new Map(),
+      responseOwners:new Map(),outputOwners:new Map(),doneResponses:new Set(),responses:[],
+      responseTexts:new Map(),firstUseful:new Map(),activeRequest:null,processingResponse:false,
+      toolPending:false,speechActive:false};
+    voice=v;
+    for(const itemId of [first,second]){
+      voiceEvent(v,{type:'input_audio_buffer.committed',item_id:itemId});
+      voiceEvent(v,{type:'conversation.item.created',item:{id:itemId,type:'message',role:'user'}});
+      voiceEvent(v,{type:'conversation.item.input_audio_transcription.completed',item_id:itemId,
+        transcript:itemId===first?'I have deer tenderloins.':'Actually, use elk.'});
+    }
+    await v.work;await new Promise(resolve=>setTimeout(resolve,20));
+    if(posts.length!==1||posts[0].itemId!==first||sent.length||
+      !stop||stop.failureCode!=='STALE_REVISION'||session.revision!==0)
+      throw Error('later input crossed a failed ordered save');
+    document.body.dataset.regression='PASS';
+  }catch(error){document.body.dataset.regression='FAIL: '+(error.stack||String(error))}
+})();
+</script>`;
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'snapndish-voice-save-fail-'));
+    try {
+      const file = path.join(directory, 'voice.html');
+      fs.writeFileSync(file, page('chat', 'browser-test', true, true, true).replace('</body>', fixture + '</body>'));
+      let output;
+      try { output = execFileSync(chrome, ['--headless=new', '--no-first-run',
+        '--no-default-browser-check', '--disable-gpu', '--disable-background-networking',
+        '--virtual-time-budget=6000', `--user-data-dir=${path.join(directory, 'chrome-profile')}`,
+        '--dump-dom', `file://${file}`],
+      { encoding: 'utf8', timeout: 35_000, stdio: ['ignore', 'pipe', 'ignore'] }); }
+      catch (error) { output = error.stdout || error.output?.[1] || ''; }
+      assert.match(output, /data-regression="PASS"/,
+        output.match(/data-regression="[^"]*/)?.[0] || output.slice(-600));
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
 test('real browser defers tool continuation while a newer customer interruption is being saved',
   { skip: !process.env.SNAP_BROWSER_TEST && 'Set SNAP_BROWSER_TEST=1 to run Chrome' }, () => {
     assert.ok(chrome, 'Chrome is required for the browser regression');
