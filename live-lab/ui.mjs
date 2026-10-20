@@ -168,7 +168,7 @@ function voiceDiagnostic(v,kind,details={}){
   try{
     const item={seq:(v.diagnosticSeq=(v.diagnosticSeq||0)+1),
       ms:Math.min(3600000,Math.max(0,Math.round(performance.now()-(v.diagnosticStarted??=performance.now())))),kind};
-    for(const key of ['itemId','responseId'])if(typeof details[key]==='string'&&/^[A-Za-z0-9_-]{4,128}$/.test(details[key]))item[key]=details[key];
+    for(const key of ['itemId','responseId'])if(typeof details[key]==='string'&&/^[A-Za-z0-9_-]{4,80}$/.test(details[key]))item[key]=details[key];
     if(['in_progress','completed','cancelled','failed','incomplete','other'].includes(details.status))item.status=details.status;
     if(['new','connecting','connected','disconnected','failed','closed','checking','completed'].includes(details.connection))item.connection=details.connection;
     if(['empty','nonempty','failed'].includes(details.outcome))item.outcome=details.outcome;
