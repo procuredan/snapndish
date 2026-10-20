@@ -11,6 +11,62 @@ const chrome = [process.env.CHROME_PATH,
   '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable']
   .filter(Boolean).find(candidate => fs.existsSync(candidate));
 
+test('real browser preserves provider error and tool identities after diagnostic overflow',
+  { skip: !process.env.SNAP_BROWSER_TEST && 'Set SNAP_BROWSER_TEST=1 to run Chrome' }, () => {
+    assert.ok(chrome, 'Chrome is required for the browser regression');
+    const fixture = String.raw`<script>
+(async()=>{
+  try{
+    const id='11111111-1111-4111-8111-111111111111';
+    session={id,revision:1,turns:[],meal_plan:null,meal_revision:0,
+      shopping_revision:0,cooking_progress:null,cooking_revision:0};
+    let stopped;
+    window.fetch=async(url,options)=>{
+      if(url.endsWith('/voice/stop')){stopped=JSON.parse(options.body);return new Response('{}')}
+      if(url.endsWith('/api/sessions/'+id))return new Response(JSON.stringify(session));
+      throw Error('unexpected request '+url);
+    };
+    const v={id:'22222222-2222-4222-8222-222222222222',sessionId:id,generation,
+      behaviorVersion:'stage1b-meal-package-v5.1+voice-bridge-v2',work:Promise.resolve(),
+      mic:{getTracks:()=>[{stop(){}}]},dc:{readyState:'open',close(){}},pc:{close(){}},
+      diagnostics:[],activeRequest:null,syncFailed:false};
+    voice=v;
+    for(let i=0;i<60;i++)voiceDiagnostic(v,'speech_started');
+    voiceDiagnostic(v,'function_output_sent',{eventId:'evt_tool_output_1',callId:'call_tool_1',
+      outputId:'item_output_1',phase:'tool_output',message:'private recipe'});
+    for(let i=0;i<25;i++)voiceDiagnostic(v,'speech_stopped');
+    voiceEvent(v,{type:'error',event_id:'event_provider_1',error:{event_id:'evt_tool_output_1',
+      type:'invalid_request_error',code:'invalid_function_call_output',param:'item.call_id',
+      message:'private provider words'}});
+    await v.work;await new Promise(resolve=>setTimeout(resolve,25));
+    if(!stopped||stopped.diagnostics.events.length!==64||stopped.diagnostics.dropped<1)
+      throw Error('bounded diagnostic was not saved');
+    const events=stopped.diagnostics.events;
+    if(!events.some(e=>e.kind==='function_output_sent'&&e.eventId==='evt_tool_output_1')||
+      !events.some(e=>e.kind==='provider_error'&&e.errorEventId==='evt_tool_output_1'&&
+        e.errorCode==='invalid_function_call_output')||
+      JSON.stringify(stopped.diagnostics).includes('private'))
+      throw Error('critical identity was lost or private content leaked');
+    document.body.dataset.regression='PASS';
+  }catch(error){document.body.dataset.regression='FAIL: '+(error.stack||String(error))}
+})();
+</script>`;
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'snapndish-voice-overflow-'));
+    try {
+      const file = path.join(directory, 'voice.html');
+      fs.writeFileSync(file, page('chat', 'browser-test', true, true, true).replace('</body>', fixture + '</body>'));
+      let output;
+      try { output = execFileSync(chrome, ['--headless=new', '--no-first-run',
+        '--no-default-browser-check', '--disable-gpu', '--disable-background-networking',
+        '--virtual-time-budget=6000', `--user-data-dir=${path.join(directory, 'chrome-profile')}`,
+        '--dump-dom', `file://${file}`],
+      { encoding: 'utf8', timeout: 35_000, stdio: ['ignore', 'pipe', 'ignore'] }); }
+      catch (error) { output = error.stdout || error.output?.[1] || ''; }
+      assert.match(output, /data-regression="PASS"/,
+        output.match(/data-regression="[^"]*/)?.[0] || output.slice(-600));
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
 test('real browser stops queued voice saves after the first ordered transcript fails',
   { skip: !process.env.SNAP_BROWSER_TEST && 'Set SNAP_BROWSER_TEST=1 to run Chrome' }, () => {
     assert.ok(chrome, 'Chrome is required for the browser regression');

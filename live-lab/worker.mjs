@@ -1120,6 +1120,12 @@ const VOICE_DIAGNOSTIC_KINDS = new Set([
   'audio_transcript_started', 'audio_transcript_done', 'response_done', 'provider_error', 'shutdown',
   'input_item_created', 'response_requested', 'response_output_started', 'response_output_done',
   'tool_output_created', 'response_ownership_rejected', 'input_skipped',
+  'voice_configuration', 'mic_muted', 'mic_unmuted', 'remote_track_added',
+  'playback_playing', 'playback_waiting', 'playback_paused', 'playback_ended', 'playback_error',
+  'playback_start_succeeded', 'playback_start_failed',
+  'output_buffer_started', 'output_buffer_stopped', 'output_buffer_cleared',
+  'session_update_attempt', 'session_update_sent',
+  'function_output_attempt', 'function_output_sent',
 ]);
 const VOICE_STOP_REASONS = new Set([
   'manual', 'empty_transcript', 'sync_error', 'data_channel_closed', 'connect_error', 'new_conversation',
@@ -1135,6 +1141,10 @@ function boundedVoiceDiagnostics(input) {
   const allowedOutcome = new Set(['empty', 'nonempty', 'failed']);
   const allowedReason = new Set(['turn_detected', 'client_cancelled', 'max_output_tokens',
     'content_filter', 'unknown', 'mismatch', 'missing', 'superseded', 'failed']);
+  const allowedPhase = new Set(['state_sync', 'tool_output', 'input', 'continuation']);
+  const allowedSource = new Set(['requested', 'provider', 'mic_settings']);
+  const machineCode = value => typeof value === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(value);
+  const fieldPath = value => typeof value === 'string' && /^[A-Za-z0-9_.\[\]-]{1,80}$/.test(value);
   const events = [];
   for (const item of input.events) {
     if (!item || !VOICE_DIAGNOSTIC_KINDS.has(item.kind) ||
@@ -1144,6 +1154,18 @@ function boundedVoiceDiagnostics(input) {
       (item.responseId != null && !providerId(item.responseId)) ||
       (item.requestId != null && !providerId(item.requestId)) ||
       (item.outputId != null && !providerId(item.outputId)) ||
+      (item.eventId != null && !providerId(item.eventId)) ||
+      (item.errorEventId != null && !providerId(item.errorEventId)) ||
+      (item.callId != null && !providerId(item.callId)) ||
+      (item.errorType != null && !machineCode(item.errorType)) ||
+      (item.errorCode != null && !machineCode(item.errorCode)) ||
+      (item.errorParam != null && !fieldPath(item.errorParam)) ||
+      (item.phase != null && !allowedPhase.has(item.phase)) ||
+      (item.source != null && !allowedSource.has(item.source)) ||
+      (item.clientVersion != null && item.clientVersion !== 'talk-it-diagnostics-v2') ||
+      (item.turnDetection != null && item.turnDetection !== 'semantic_vad') ||
+      ['createResponse', 'interruptResponse', 'echoCancellation', 'noiseSuppression', 'autoGainControl']
+        .some(key => item[key] != null && typeof item[key] !== 'boolean') ||
       (item.status != null && !allowedStatus.has(item.status)) ||
       (item.connection != null && !allowedConnection.has(item.connection)) ||
       (item.outcome != null && !allowedOutcome.has(item.outcome)) ||
@@ -1153,13 +1175,26 @@ function boundedVoiceDiagnostics(input) {
       ...(item.responseId ? { response_id: item.responseId } : {}),
       ...(item.requestId ? { request_id: item.requestId } : {}),
       ...(item.outputId ? { output_id: item.outputId } : {}),
+      ...(item.eventId ? { event_id: item.eventId } : {}),
+      ...(item.errorEventId ? { error_event_id: item.errorEventId } : {}),
+      ...(item.callId ? { call_id: item.callId } : {}),
+      ...(item.errorType ? { error_type: item.errorType } : {}),
+      ...(item.errorCode ? { error_code: item.errorCode } : {}),
+      ...(item.errorParam ? { error_param: item.errorParam } : {}),
+      ...(item.phase ? { phase: item.phase } : {}),
+      ...(item.source ? { source: item.source } : {}),
+      ...(item.clientVersion ? { client_version: item.clientVersion } : {}),
+      ...(item.turnDetection ? { turn_detection: item.turnDetection } : {}),
+      ...Object.fromEntries(['createResponse', 'interruptResponse', 'echoCancellation',
+        'noiseSuppression', 'autoGainControl'].filter(key => typeof item[key] === 'boolean')
+        .map(key => [key.replace(/[A-Z]/g, letter => '_' + letter.toLowerCase()), item[key]])),
       ...(item.status ? { status: item.status } : {}),
       ...(item.connection ? { connection: item.connection } : {}),
       ...(item.outcome ? { outcome: item.outcome } : {}),
       ...(item.reason ? { reason: item.reason } : {}) });
   }
   if (!events.every((item, index) => index === 0 || item.seq > events[index - 1].seq)) return null;
-  return { version: 1, stop_reason: input.stopReason,
+  return { version: 2, stop_reason: input.stopReason,
     dropped: Number.isSafeInteger(input.dropped) && input.dropped >= 0 && input.dropped <= 100_000
       ? input.dropped : 0, events };
 }

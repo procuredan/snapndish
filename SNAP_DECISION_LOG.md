@@ -254,6 +254,14 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 - **Proof / stop:** Require cancellation/request/output diagnostics, order and currentness tests for deer, catfish and trout sequences, full local/browser suite, exact-source CI, isolated staging and a real microphone journey. Unknown ownership fails closed. Stop if the contract or live behavior cannot establish safe input/response/tool association or natural interruption. Preserve Worker `c0cb6eef-9325-48a4-a766-da1753cb5f38` as code rollback; routine code rollback does not restore D1. Production and Milestone 2 remain out of scope.
 - **Supersedes:** SNDISH-027 only for its response-scheduling stop boundary and approved VAD response-creation setting. Its privacy, state-authority and release safeguards remain binding.
 
+### SNDISH-029 — Talk It diagnostic control and contextual meal-selection experiment
+
+- **Date / owner:** 2026-10-20; Snap n Dish product owner, via the Talk It Diagnostics and Meal Selection Authority Engineering GO.
+- **Decision:** Start from exact source `9bee1419a68428b80118cdc40cde1c2dfd249227`, preserving Worker `20ba6552-9bbe-4de4-9098-3c64098a648e` as the isolated staging code control. First add bounded, content-free provider-error, outgoing tool-continuation, response, playback, microphone, speech and effective-configuration diagnostics. Deploy this diagnostic-only candidate after local/browser tests and exact-source CI, then review a real-microphone control run before changing selection behavior.
+- **Conditional second phase:** A separately versioned contextual selection contract may distinguish cuisine exploration and tentative preference from a clear meal selection or delegated choice, consistently in Write It, Talk It, tool description and synchronization. Compare identical complete conversation contexts against unchanged V5.1, including fixed and held-out culinary cases. Preserve automatic complete meal/Shopping acceptance after clear commitment and all currentness and repair protections. No model, voice setting, VAD, scheduling, schema, validator or migration change is authorized.
+- **Release / stop:** Isolated Stage 1B only. Stop for recurrent unexplained provider errors, ownership or natural-interruption regressions, premature meal acceptance, damaged clear-choice behavior, or diagnostic interference. Require independent QA and physical microphone evidence before PM acceptance. Production and Milestone 2 remain excluded. Routine Worker rollback does not restore D1.
+- **Supersedes:** None; SNDISH-028 response ownership and earlier culinary/data safeguards remain binding.
+
 ## Open decisions — no authority may be invented
 
 1. Stage 1A quality result and owner benchmark/human review; the current prototype tests are not that decision.

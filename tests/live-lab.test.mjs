@@ -1467,15 +1467,24 @@ test('Talk It lifecycle diagnostics are bounded, private, idempotent, and cannot
       { sdp: 'v=0\r\noffer', expectedRevision: 0 }, cookie), e, context())).json()).voiceSessionId;
   } finally { globalThis.fetch = original; }
   const diagnostic = { stopReason: 'manual', dropped: 0, events: [
-    { seq: 1, ms: 0, kind: 'voice_connected' },
-    { seq: 2, ms: 150, kind: 'response_requested', requestId: 'req_catfish_1', itemId: 'item_catfish_1' },
+    { seq: 1, ms: 0, kind: 'voice_configuration', source: 'mic_settings',
+      clientVersion: 'talk-it-diagnostics-v2',
+      echoCancellation: true, noiseSuppression: false, autoGainControl: true },
+    { seq: 2, ms: 150, kind: 'response_requested', requestId: 'req_catfish_1', itemId: 'item_catfish_1', phase: 'input' },
     { seq: 3, ms: 200, kind: 'response_created', requestId: 'req_catfish_1', itemId: 'item_catfish_1', responseId: 'resp_catfish_1', status: 'in_progress' },
     { seq: 4, ms: 280, kind: 'response_output_started', responseId: 'resp_catfish_1', outputId: 'out_catfish_1' },
     { seq: 5, ms: 400, kind: 'response_done', requestId: 'req_catfish_1', itemId: 'item_catfish_1', responseId: 'resp_catfish_1', status: 'cancelled', reason: 'turn_detected' },
     { seq: 6, ms: 500, kind: 'transcription_completed', itemId: 'item_empty_1', outcome: 'empty',
       transcript: 'private catfish words', credentials: 'sk-private-test' },
     { seq: 7, ms: 501, kind: 'input_skipped', itemId: 'item_empty_1', reason: 'missing' },
-    { seq: 8, ms: 700, kind: 'shutdown' },
+    { seq: 8, ms: 600, kind: 'function_output_sent', itemId: 'item_catfish_1',
+      responseId: 'resp_catfish_1', eventId: 'evt_output_1', callId: 'call_catfish_1',
+      outputId: 'item_result_1', phase: 'tool_output', output: 'private recipe contents' },
+    { seq: 9, ms: 610, kind: 'provider_error', eventId: 'event_provider_1',
+      errorEventId: 'evt_output_1', errorType: 'invalid_request_error',
+      errorCode: 'invalid_function_call_output', errorParam: 'item.call_id',
+      message: 'private provider message' },
+    { seq: 10, ms: 700, kind: 'shutdown' },
   ] };
   const stop = await worker.fetch(req(`/api/sessions/${id}/voice/stop`, 'POST',
     { voiceSessionId: firstId, diagnostics: diagnostic }, cookie), e, context());
@@ -1483,17 +1492,25 @@ test('Talk It lifecycle diagnostics are bounded, private, idempotent, and cannot
   assert.equal(e.DB.raw.prepare('SELECT active_voice_id FROM sessions WHERE id=?').get(id).active_voice_id, null);
   const saved = e.DB.raw.prepare("SELECT details_json FROM state_events WHERE kind='voice_lifecycle'").get();
   assert.ok(saved);
-  assert.doesNotMatch(saved.details_json, /private catfish|sk-private|credentials|"transcript":/);
-  assert.deepEqual(JSON.parse(saved.details_json), { voice_session_id: firstId, version: 1,
+  assert.doesNotMatch(saved.details_json, /private catfish|sk-private|credentials|private recipe|private provider|"transcript":/);
+  assert.deepEqual(JSON.parse(saved.details_json), { voice_session_id: firstId, version: 2,
     stop_reason: 'manual', dropped: 0, events: [
-      { seq: 1, ms: 0, kind: 'voice_connected' },
-      { seq: 2, ms: 150, kind: 'response_requested', item_id: 'item_catfish_1', request_id: 'req_catfish_1' },
+      { seq: 1, ms: 0, kind: 'voice_configuration', source: 'mic_settings',
+        client_version: 'talk-it-diagnostics-v2',
+        echo_cancellation: true, noise_suppression: false, auto_gain_control: true },
+      { seq: 2, ms: 150, kind: 'response_requested', item_id: 'item_catfish_1', request_id: 'req_catfish_1', phase: 'input' },
       { seq: 3, ms: 200, kind: 'response_created', item_id: 'item_catfish_1', response_id: 'resp_catfish_1', request_id: 'req_catfish_1', status: 'in_progress' },
       { seq: 4, ms: 280, kind: 'response_output_started', response_id: 'resp_catfish_1', output_id: 'out_catfish_1' },
       { seq: 5, ms: 400, kind: 'response_done', item_id: 'item_catfish_1', response_id: 'resp_catfish_1', request_id: 'req_catfish_1', status: 'cancelled', reason: 'turn_detected' },
       { seq: 6, ms: 500, kind: 'transcription_completed', item_id: 'item_empty_1', outcome: 'empty' },
       { seq: 7, ms: 501, kind: 'input_skipped', item_id: 'item_empty_1', reason: 'missing' },
-      { seq: 8, ms: 700, kind: 'shutdown' },
+      { seq: 8, ms: 600, kind: 'function_output_sent', item_id: 'item_catfish_1',
+        response_id: 'resp_catfish_1', output_id: 'item_result_1', event_id: 'evt_output_1',
+        call_id: 'call_catfish_1', phase: 'tool_output' },
+      { seq: 9, ms: 610, kind: 'provider_error', event_id: 'event_provider_1',
+        error_event_id: 'evt_output_1', error_type: 'invalid_request_error',
+        error_code: 'invalid_function_call_output', error_param: 'item.call_id' },
+      { seq: 10, ms: 700, kind: 'shutdown' },
     ] });
   await worker.fetch(req(`/api/sessions/${id}/voice/stop`, 'POST',
     { voiceSessionId: firstId, diagnostics: diagnostic }, cookie), e, context());
