@@ -112,6 +112,74 @@ test('real browser preserves catfish cancellation, skips empty audio, and owns s
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });
 
+test('real browser never schedules a response after End Talk It while transcript save completes',
+  { skip: !process.env.SNAP_BROWSER_TEST && 'Set SNAP_BROWSER_TEST=1 to run Chrome' }, () => {
+    assert.ok(chrome, 'Chrome is required for the browser regression');
+    const fixture = String.raw`<script>
+(async()=>{
+  try{
+    const id='11111111-1111-4111-8111-111111111111';
+    const voiceId='22222222-2222-4222-8222-222222222222';
+    const itemId='item_trout_close';
+    const saved={id,revision:0,active_voice_id:voiceId,meal_plan:null,meal_revision:0,
+      shopping_revision:0,cooking_progress:null,cooking_revision:0,turns:[]};
+    session=saved;
+    const sent=[];let finishSave,stop;
+    window.fetch=async(url,options)=>{
+      if(url.endsWith('/voice/events')){
+        const body=JSON.parse(options.body);if(body.type!=='user')throw Error('Reply posted after close');
+        return new Promise(resolve=>{finishSave=()=>{
+          saved.revision=1;saved.turns.push({id:'turn_trout_close',role:'user',text:body.transcript,revision:1});
+          resolve(new Response(JSON.stringify({turnId:'turn_trout_close',revision:1,status:'accepted'})));
+        }});
+      }
+      if(url.endsWith('/voice/stop')){stop=JSON.parse(options.body);return new Response(JSON.stringify({stopped:true}))}
+      if(url.endsWith('/api/sessions/'+id))return new Response(JSON.stringify(saved));
+      throw Error('Unexpected request '+url);
+    };
+    const v={id:voiceId,sessionId:id,generation,work:Promise.resolve(),userOrder:[],responses:[],
+      transcripts:new Map(),acceptedUsers:new Map(),responseTexts:new Map(),firstUseful:new Map(),
+      speechStopped:null,syncFailed:false,failureCode:null,pendingTool:null,toolPending:false,
+      repairAttempts:new Map(),awaitingUsefulSpeech:null,
+      behaviorVersion:'stage1b-meal-package-v5.1+voice-bridge-v2',
+      committedInputs:[],inputResults:new Map(),inputCursor:0,pendingInputs:[],contextOrder:[],
+      completedOutputs:new Set(),toolOutputs:new Set(),requests:new Map(),responseOwners:new Map(),
+      outputOwners:new Map(),doneResponses:new Set(),activeRequest:null,processingResponse:false,
+      pendingToolOutput:null,
+      mic:{getTracks:()=>[{stop(){}}]},dc:{readyState:'open',send:value=>sent.push(JSON.parse(value)),close(){}},
+      pc:{close(){}}};
+    voice=v;
+    voiceEvent(v,{type:'input_audio_buffer.committed',item_id:itemId});
+    voiceEvent(v,{type:'conversation.item.created',item:{id:itemId,type:'message',role:'user'}});
+    voiceEvent(v,{type:'conversation.item.input_audio_transcription.completed',item_id:itemId,
+      transcript:'Please make trout.'});
+    await Promise.resolve();await Promise.resolve();
+    if(!finishSave)throw Error('transcript save was not pending');
+    const ending=endVoice();
+    finishSave();await ending;
+    if(!stop||stop.diagnostics.stopReason!=='manual'||sent.some(event=>event.type==='response.create')||
+      saved.turns.length!==1||voice!==null)
+      throw Error('closed Talk It issued a response or lost the committed customer turn');
+    document.body.dataset.regression='PASS';
+  }catch(error){document.body.dataset.regression='FAIL: '+(error.stack||String(error))}
+})();
+</script>`;
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'snapndish-voice-close-'));
+    try {
+      const file = path.join(directory, 'voice.html');
+      fs.writeFileSync(file, page('chat', 'browser-test', true, true, true).replace('</body>', fixture + '</body>'));
+      let output;
+      try { output = execFileSync(chrome, ['--headless=new', '--no-first-run',
+        '--no-default-browser-check', '--disable-gpu', '--disable-background-networking',
+        '--virtual-time-budget=6000', `--user-data-dir=${path.join(directory, 'chrome-profile')}`,
+        '--dump-dom', `file://${file}`],
+      { encoding: 'utf8', timeout: 35_000, stdio: ['ignore', 'pipe', 'ignore'] }); }
+      catch (error) { output = error.stdout || error.output?.[1] || ''; }
+      assert.match(output, /data-regression="PASS"/,
+        output.match(/data-regression="[^"]*/)?.[0] || output.slice(-600));
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
 test('real browser orders transcription results and fails closed on mismatched response identity',
   { skip: !process.env.SNAP_BROWSER_TEST && 'Set SNAP_BROWSER_TEST=1 to run Chrome' }, () => {
     assert.ok(chrome, 'Chrome is required for the browser regression');
@@ -120,7 +188,7 @@ test('real browser orders transcription results and fails closed on mismatched r
   try{
     const id='11111111-1111-4111-8111-111111111111';
     const voiceId='22222222-2222-4222-8222-222222222222';
-    const first='item_deer_noise',second='item_deer_actual';
+    const first='item_deer_original',second='item_deer_correction';
     const saved={id,revision:0,active_voice_id:voiceId,meal_plan:null,meal_revision:0,
       shopping_revision:0,cooking_progress:null,cooking_revision:0,turns:[]};
     session=saved;
@@ -129,8 +197,9 @@ test('real browser orders transcription results and fails closed on mismatched r
       if(url.endsWith('/voice/events')){
         const body=JSON.parse(options.body);posts.push(body);
         if(body.type!=='user')throw Error('A mismatched response reached application authority');
-        saved.revision=1;saved.turns.push({id:'turn_deer',role:'user',text:body.transcript,revision:1});
-        return new Response(JSON.stringify({turnId:'turn_deer',revision:1,status:'accepted'}));
+        saved.revision++;const turnId='turn_deer_'+saved.revision;
+        saved.turns.push({id:turnId,role:'user',text:body.transcript,revision:saved.revision});
+        return new Response(JSON.stringify({turnId,revision:saved.revision,status:'accepted'}));
       }
       if(url.endsWith('/voice/stop')){stop=JSON.parse(options.body);return new Response(JSON.stringify({stopped:true}))}
       if(url.endsWith('/api/sessions/'+id))return new Response(JSON.stringify(saved));
@@ -154,17 +223,19 @@ test('real browser orders transcription results and fails closed on mismatched r
     voiceEvent(v,{type:'conversation.item.created',previous_item_id:first,
       item:{id:second,type:'message',role:'user'}});
     voiceEvent(v,{type:'conversation.item.input_audio_transcription.completed',item_id:second,
-      transcript:'I have deer tenderloins.'});
+      transcript:'Actually, make that elk.'});
     await v.work;
     if(posts.length||sent.length)throw Error('later transcription overtook committed input');
-    voiceEvent(v,{type:'conversation.item.input_audio_transcription.completed',item_id:first,transcript:''});
-    voiceEvent(v,{type:'conversation.item.input_audio_transcription.completed',item_id:second,
+    voiceEvent(v,{type:'conversation.item.input_audio_transcription.completed',item_id:first,
       transcript:'I have deer tenderloins.'});
+    voiceEvent(v,{type:'conversation.item.input_audio_transcription.completed',item_id:second,
+      transcript:'Actually, make that elk.'});
     await v.work;
     const request=sent.find(event=>event.type==='response.create');
-    if(posts.length!==1||posts[0].itemId!==second||!request||
+    if(posts.length!==2||posts[0].itemId!==first||posts[1].itemId!==second||!request||
       request.response.metadata.snap_origin_item_id!==second||
-      request.response.input.some(ref=>ref.id===first))
+      !request.response.input.some(ref=>ref.id===first)||
+      sent.filter(event=>event.type==='response.create').length!==1)
       throw Error('late/duplicate transcription changed accepted order or response owner');
     voiceEvent(v,{type:'response.created',response:{id:'resp_wrong_owner',
       metadata:{...request.response.metadata,snap_origin_item_id:first},
@@ -172,10 +243,10 @@ test('real browser orders transcription results and fails closed on mismatched r
     await new Promise(resolve=>setTimeout(resolve,25));
     if(!stop||stop.failureCode!=='VOICE_OWNERSHIP_ERROR'||
       stop.diagnostics.stopReason!=='ownership_error'||
-      posts.some(post=>post.type==='assistant')||saved.turns.length!==1)
+      posts.some(post=>post.type==='assistant')||saved.turns.length!==2)
       throw Error('mismatched response did not fail closed with accepted input intact');
     voiceEvent(v,{type:'response.done',response:{id:'resp_wrong_owner',status:'completed'}});
-    if(posts.length!==1)throw Error('late completion changed application state');
+    if(posts.length!==2)throw Error('late completion changed application state');
     document.body.dataset.regression='PASS';
   }catch(error){document.body.dataset.regression='FAIL: '+(error.stack||String(error))}
 })();
