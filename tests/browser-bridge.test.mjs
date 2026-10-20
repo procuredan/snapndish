@@ -64,7 +64,8 @@ test('real browser executes voice state sync, tool-result ordering and accepted 
       pendingTool:null,repairAttempts:new Map(),awaitingUsefulSpeech:null,
       userOrder:[item],transcripts:new Map([[item,"Let's cook."]]),
       committedInputs:[item],inputResults:new Map(),inputCursor:1,pendingInputs:[],contextOrder:[item],
-      completedOutputs:new Set(),toolOutputs:new Set(),requests:new Map(),responseOwners:new Map(),
+      completedOutputs:new Set(),toolOutputs:new Set(),requests:new Map(),
+      responseOwners:new Map([['response_tool_1',{itemId:item,requestId:'req_tool_1'}]]),
       outputOwners:new Map(),doneResponses:new Set(),activeRequest:null,processingResponse:false,
       pendingToolOutput:null,
       acceptedUsers:new Map([[item,{turnId,revision:1}]]),responses:[{itemId:item,response:{id:'response_tool_1',status:'completed',
@@ -78,12 +79,20 @@ test('real browser executes voice state sync, tool-result ordering and accepted 
     if(events[0]!=='proposal')throw Error('proposal was not first');
     const outputAt=sent.findIndex(event=>event.type==='conversation.item.create'&&
       event.item.type==='function_call_output');
-    const outputId=sent[outputAt]?.item.id;
+    if(Object.hasOwn(sent[outputAt].item,'id')||sent.some(event=>event.type==='response.create'))
+      throw Error('function output supplied an item ID or continued before acknowledgment');
+    const outputId='item_provider_tool_result_1';
     voiceEvent(v,{type:'conversation.item.created',previous_item_id:item,
-      item:{id:outputId,type:'function_call_output',call_id:'call_1'}});
+      item:{id:outputId,type:'function_call_output',call_id:'call_1',output:sent[outputAt].item.output}});
     const speechAt=sent.findIndex((event,index)=>index>outputAt&&event.type==='response.create');
-    if(outputAt<0||speechAt<0||sent[outputAt].item.call_id!=='call_1')
+    if(outputAt<0||speechAt<0||sent[outputAt].item.call_id!=='call_1'||
+      !v.contextOrder.includes(outputId)||!v.toolOutputs.has(outputId)||
+      !sent[speechAt].response.input.some(ref=>ref.id===outputId))
       throw Error('real tool output did not precede speech continuation');
+    voiceEvent(v,{type:'conversation.item.created',previous_item_id:item,
+      item:{id:outputId,type:'function_call_output',call_id:'call_1',output:sent[outputAt].item.output}});
+    if(sent.filter(event=>event.type==='response.create').length!==1)
+      throw Error('duplicate provider output requested another continuation');
     if(nowPanel.hidden||!nowText.textContent.includes('Start the rice')||fullPlan.hidden)
       throw Error('accepted cooking state did not render');
     v.activeRequest=null;
@@ -124,6 +133,77 @@ test('real browser executes voice state sync, tool-result ordering and accepted 
       { encoding: 'utf8', timeout: 35_000, stdio: ['ignore', 'pipe', 'ignore'] }); }
       catch (error) { output = error.stdout || error.output?.[1] || ''; }
       assert.match(output, /data-regression="PASS"/, output.match(/data-regression="[^"]*/)?.[0] || output.slice(-600));
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
+test('real browser keeps one accepted meal and Shopping state when provider rejects its tool output',
+  { skip: !process.env.SNAP_BROWSER_TEST && 'Set SNAP_BROWSER_TEST=1 to run Chrome' }, () => {
+    assert.ok(chrome, 'Chrome is required for the browser regression');
+    const fixture = String.raw`<script>
+(async()=>{
+  try{
+    const id='11111111-1111-4111-8111-111111111111',item='item_customer_choice';
+    const plan={meal:'Chicken and rice',servings:2,sections:[{section:'Meat',items:[
+      {id:'33333333-3333-4333-8333-333333333333',name:'Chicken',quantity:'1 lb',
+        checked:false,have_status:'need'}]}],full_plan:[{title:'Cook',directions:'Cook the chicken safely.'}]};
+    const saved={id,revision:1,turns:[],meal_plan:null,meal_revision:0,shopping_revision:0,
+      cooking_progress:null,cooking_revision:0};
+    session=structuredClone(saved);
+    let proposals=0,stops=0;const sent=[];
+    window.fetch=async(url,options)=>{
+      if(url.endsWith('/voice/events')){
+        const body=JSON.parse(options.body);
+        if(body.type!=='proposal')throw Error('unexpected voice operation '+body.type);
+        proposals++;saved.meal_plan=plan;saved.meal_revision=1;saved.shopping_revision=1;
+        return new Response(JSON.stringify({status:'accepted',accepted:true,operation:'meal'}));
+      }
+      if(url.endsWith('/api/sessions/'+id))return new Response(JSON.stringify(saved));
+      if(url.endsWith('/metrics'))return new Response(JSON.stringify({accepted:true}));
+      if(url.endsWith('/voice/stop')){stops++;return new Response('{}')}
+      throw Error('unexpected request '+url);
+    };
+    const v={id:'22222222-2222-4222-8222-222222222222',sessionId:id,generation,
+      behaviorVersion:'stage1b-meal-package-v5.1+voice-bridge-v2',work:Promise.resolve(),
+      dc:{readyState:'open',send:value=>sent.push(JSON.parse(value)),close(){}},
+      mic:{getTracks:()=>[{stop(){}}]},pc:{close(){}},
+      acceptedUsers:new Map([[item,{turnId:'turn_choice',revision:1}]]),
+      committedInputs:[item],inputResults:new Map(),inputCursor:1,pendingInputs:[],
+      contextOrder:[item],completedOutputs:new Set(),toolOutputs:new Set(),requests:new Map(),
+      responseOwners:new Map([['resp_meal_tool',{itemId:item,requestId:'req_meal_tool'}]]),
+      outputOwners:new Map(),doneResponses:new Set(),responseTexts:new Map(),firstUseful:new Map(),
+      activeRequest:null,processingResponse:false,toolPending:false,speechActive:false,
+      repairAttempts:new Map(),responses:[{itemId:item,response:{id:'resp_meal_tool',status:'completed',
+        output:[{id:'item_meal_tool',type:'function_call',call_id:'call_meal_tool',
+          name:'publish_meal_plan',arguments:'{}'}]}}]};
+    voice=v;drainVoice(v);await v.work;
+    const output=sent.find(event=>event.type==='conversation.item.create');
+    if(!output||Object.hasOwn(output.item,'id')||sent.some(event=>event.type==='response.create')||
+      proposals!==1||saved.meal_revision!==1||saved.shopping_revision!==1||
+      shopping.hidden||recipe.hidden)
+      throw Error('accepted meal was not displayed while continuation awaited acknowledgment');
+    voiceEvent(v,{type:'error',event_id:'evt_provider_error',error:{event_id:output.event_id,
+      type:'invalid_request_error',code:'invalid_function_call_output',param:'item.call_id'}});
+    await new Promise(resolve=>setTimeout(resolve,0));
+    if(voice===v||stops!==1||proposals!==1||saved.meal_revision!==1||
+      saved.shopping_revision!==1||sent.some(event=>event.type==='response.create'))
+      throw Error('provider error repeated a meal or released continuation');
+    document.body.dataset.regression='PASS';
+  }catch(error){document.body.dataset.regression='FAIL: '+(error.stack||String(error))}
+})();
+</script>`;
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'snapndish-accepted-tool-error-'));
+    try {
+      const file = path.join(directory, 'bridge.html');
+      fs.writeFileSync(file, page('chat', 'browser-test', true, true, true).replace('</body>', fixture + '</body>'));
+      let output;
+      try { output = execFileSync(chrome, ['--headless=new', '--no-first-run',
+        '--no-default-browser-check', '--disable-gpu', '--disable-background-networking',
+        '--virtual-time-budget=6000', `--user-data-dir=${path.join(directory, 'chrome-profile')}`,
+        '--dump-dom', `file://${file}`],
+      { encoding: 'utf8', timeout: 35_000, stdio: ['ignore', 'pipe', 'ignore'] }); }
+      catch (error) { output = error.stdout || error.output?.[1] || ''; }
+      assert.match(output, /data-regression="PASS"/,
+        output.match(/data-regression="[^"]*/)?.[0] || output.slice(-600));
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });
 

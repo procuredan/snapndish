@@ -214,14 +214,6 @@ function drainVoiceV2(v){
           reason:result.reason||null,meal:result.accepted?session?.meal_plan?.meal:null,
           now:result.accepted?session?.cooking_progress?.current_action:null};
         if(!v.closing&&voice===v&&v.dc?.readyState==='open'){
-          const outputId='item_'+crypto.randomUUID().replaceAll('-','');
-          v.pendingToolOutput={id:outputId,itemId,callId:toolCall.call_id,responseId:response.id};
-          const eventId='evt_'+crypto.randomUUID().replaceAll('-','');
-          const outputDiagnostic={eventId,itemId,requestId:v.responseOwners.get(response.id)?.requestId,responseId:response.id,outputId,callId:toolCall.call_id,phase:'tool_output'};
-          voiceDiagnostic(v,'function_output_attempt',outputDiagnostic);
-          v.dc.send(JSON.stringify({type:'conversation.item.create',event_id:eventId,item:{type:'function_call_output',
-            id:outputId,call_id:toolCall.call_id,output:JSON.stringify(outcome)}}));
-          voiceDiagnostic(v,'function_output_sent',outputDiagnostic);
           const guidance=result.accepted
             ? result.operation==='meal'
               ? 'The complete meal package, Shopping and recipe were accepted and are visible. Speak a brief natural transition naming the meal. Do not read the shopping list or recipe aloud.'
@@ -229,8 +221,16 @@ function drainVoiceV2(v){
             : canRepair
               ? 'The application rejected your proposal: '+result.reason+'. Correct the tool arguments and call the same tool again before claiming success. The full_plan and remaining_components fields must be JSON arrays or null, never strings.'
               : 'The application could not save that proposal: '+result.reason+'. Explain the problem plainly and give useful safe conversational help or one necessary question. Do not claim a plan, list, or cooking state was saved.';
-          v.pendingToolOutput.guidance=guidance;
-          v.pendingToolOutput.toolChoice=result.accepted||!canRepair?'none':'auto';
+          const eventId='evt_'+crypto.randomUUID().replaceAll('-','');
+          const output=JSON.stringify(outcome);
+          v.pendingToolOutput={itemId,callId:toolCall.call_id,responseId:response.id,eventId,output,
+            guidance,toolChoice:result.accepted||!canRepair?'none':'auto'};
+          const outputDiagnostic={eventId,itemId,requestId:v.responseOwners.get(response.id)?.requestId,
+            responseId:response.id,callId:toolCall.call_id,phase:'tool_output'};
+          voiceDiagnostic(v,'function_output_attempt',outputDiagnostic);
+          v.dc.send(JSON.stringify({type:'conversation.item.create',event_id:eventId,item:{type:'function_call_output',
+            call_id:toolCall.call_id,output}}));
+          voiceDiagnostic(v,'function_output_sent',outputDiagnostic);
         }
         v.toolPending=false;v.processingResponse=false;
         drainVoice(v);scheduleVoiceResponse(v);
@@ -311,8 +311,15 @@ function voiceMediaDiagnostics(v){
   }catch{/* Diagnostics cannot affect Talk It. */}
 }
 function rememberVoiceItem(v,e){
-  const id=e.item?.id;if(!id)return;
-  if(v.contextOrder.includes(id))return;
+  const id=e.item?.id,output=e.item?.type==='function_call_output';
+  if(typeof id==='string'&&v.contextOrder.includes(id))return;
+  const pending=v.pendingToolOutput;
+  if(output&&(!pending||typeof id!=='string'||!/^[A-Za-z0-9_-]{4,128}$/.test(id)||
+    e.item.call_id!==pending.callId||e.item.output!==pending.output||
+    v.responseOwners.get(pending.responseId)?.itemId!==pending.itemId)){
+    voiceOwnershipFailure(v,pending?.responseId,pending?.itemId,'mismatch');return;
+  }
+  if(!id)return;
   const previous=e.previous_item_id;
   if(previous&&previous!=='root'&&!v.contextOrder.includes(previous)){
     voiceDiagnostic(v,'response_ownership_rejected',{itemId:id,reason:'missing'});
@@ -323,10 +330,11 @@ function rememberVoiceItem(v,e){
   else v.contextOrder.push(id);
   if(v.contextOrder.length>128){endVoice('ownership_error');return}
   if(e.item.type==='message'&&e.item.role==='user')voiceDiagnostic(v,'input_item_created',{itemId:id});
-  if(v.pendingToolOutput?.id===id){
-    const continuation=v.pendingToolOutput;v.pendingToolOutput=null;v.toolOutputs.add(id);
-    voiceDiagnostic(v,'tool_output_created',{itemId:continuation.itemId,responseId:continuation.responseId,outputId:id,callId:continuation.callId,phase:'tool_output'});
-    v.readyContinuation=continuation;scheduleVoiceResponse(v);
+  if(output){
+    v.pendingToolOutput=null;v.toolOutputs.add(id);
+    voiceDiagnostic(v,'tool_output_created',{itemId:pending.itemId,responseId:pending.responseId,
+      outputId:id,eventId:pending.eventId,callId:pending.callId,phase:'tool_output'});
+    v.readyContinuation=pending;scheduleVoiceResponse(v);
   }else scheduleVoiceResponse(v);
 }
 function voiceOwnershipFailure(v,responseId,itemId,reason){

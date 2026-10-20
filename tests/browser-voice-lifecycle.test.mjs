@@ -11,6 +11,92 @@ const chrome = [process.env.CHROME_PATH,
   '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable']
   .filter(Boolean).find(candidate => fs.existsSync(candidate));
 
+test('real browser requires the provider-created output for the pending call before one continuation',
+  { skip: !process.env.SNAP_BROWSER_TEST && 'Set SNAP_BROWSER_TEST=1 to run Chrome' }, () => {
+    assert.ok(chrome, 'Chrome is required for the browser regression');
+    const fixture = String.raw`<script>
+(async()=>{
+  try{
+    const id='11111111-1111-4111-8111-111111111111',origin='item_customer_choice';
+    const sent=[],stopped=[];
+    window.fetch=async(url,options)=>{
+      if(url.endsWith('/voice/stop')){stopped.push(JSON.parse(options.body));return new Response('{}')}
+      if(url.endsWith('/api/sessions/'+id))return new Response(JSON.stringify(session));
+      throw Error('unexpected request '+url);
+    };
+    const makeVoice=()=>{
+      const v={id:'22222222-2222-4222-8222-222222222222',sessionId:id,generation,
+        behaviorVersion:'stage1b-meal-package-v5.1+voice-bridge-v2',work:Promise.resolve(),
+        dc:{readyState:'open',send:value=>sent.push(JSON.parse(value)),close(){}},
+        mic:{getTracks:()=>[{stop(){}}]},pc:{close(){}},
+        acceptedUsers:new Map([[origin,{turnId:'turn_choice',revision:1}]]),
+        committedInputs:[],inputResults:new Map(),inputCursor:0,pendingInputs:[],
+        contextOrder:[origin,'item_tool_call'],completedOutputs:new Set(['item_tool_call']),
+        toolOutputs:new Set(),requests:new Map(),
+        responseOwners:new Map([['resp_tool',{itemId:origin,requestId:'req_tool'}]]),
+        outputOwners:new Map(),doneResponses:new Set(),responses:[],responseTexts:new Map(),
+        firstUseful:new Map(),activeRequest:null,processingResponse:false,toolPending:false,
+        speechActive:false,pendingToolOutput:{itemId:origin,callId:'call_selected_meal',
+          responseId:'resp_tool',eventId:'evt_tool_output',output:'{"accepted":true}',
+          guidance:'Speak the accepted result.',toolChoice:'none'}};
+      voice=v;return v;
+    };
+    const ack=(itemId='item_provider_result',callId='call_selected_meal',output='{"accepted":true}')=>
+      ({type:'conversation.item.created',previous_item_id:'item_tool_call',
+        item:{id:itemId,type:'function_call_output',call_id:callId,output}});
+    session={id,revision:1,turns:[],meal_plan:null,meal_revision:0,shopping_revision:0,
+      cooking_progress:null,cooking_revision:0};
+    let v=makeVoice();
+    voiceEvent(v,{type:'conversation.item.created',previous_item_id:'item_tool_call',
+      item:{id:'item_unrelated',type:'message',role:'assistant'}});
+    if(sent.length||!v.pendingToolOutput)throw Error('unrelated item released continuation');
+    voiceEvent(v,ack());
+    const requested=sent.filter(event=>event.type==='response.create');
+    if(requested.length!==1||!requested[0].response.input.some(ref=>ref.id==='item_provider_result')||
+      !v.toolOutputs.has('item_provider_result')||v.pendingToolOutput)
+      throw Error('valid provider output did not release exactly one owned continuation');
+    voiceEvent(v,ack());
+    if(sent.filter(event=>event.type==='response.create').length!==1)
+      throw Error('duplicate acknowledgment released a second continuation');
+    voice=null;
+
+    sent.length=0;v=makeVoice();
+    voiceEvent(v,ack('item_wrong_call','call_other'));
+    if(sent.length||voice===v||v.failureCode!=='VOICE_OWNERSHIP_ERROR')
+      throw Error('wrong call acknowledgment released or retained operation');
+    await v.work;
+    sent.length=0;v=makeVoice();
+    voiceEvent(v,ack('item_wrong_result','call_selected_meal','{"accepted":false}'));
+    if(sent.length||voice===v||v.failureCode!=='VOICE_OWNERSHIP_ERROR')
+      throw Error('wrong result acknowledgment released operation');
+    await v.work;
+
+    sent.length=0;session.revision=2;v=makeVoice();
+    voiceEvent(v,ack('item_late_result'));
+    if(sent.length||v.activeRequest||v.readyContinuation)
+      throw Error('late acknowledgment superseded the newer customer input');
+    voice=null;
+    if(stopped.length!==2)throw Error('invalid acknowledgment did not close Talk It');
+    document.body.dataset.regression='PASS';
+  }catch(error){document.body.dataset.regression='FAIL: '+(error.stack||String(error))}
+})();
+</script>`;
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'snapndish-tool-ack-'));
+    try {
+      const file = path.join(directory, 'voice.html');
+      fs.writeFileSync(file, page('chat', 'browser-test', true, true, true).replace('</body>', fixture + '</body>'));
+      let output;
+      try { output = execFileSync(chrome, ['--headless=new', '--no-first-run',
+        '--no-default-browser-check', '--disable-gpu', '--disable-background-networking',
+        '--virtual-time-budget=6000', `--user-data-dir=${path.join(directory, 'chrome-profile')}`,
+        '--dump-dom', `file://${file}`],
+      { encoding: 'utf8', timeout: 35_000, stdio: ['ignore', 'pipe', 'ignore'] }); }
+      catch (error) { output = error.stdout || error.output?.[1] || ''; }
+      assert.match(output, /data-regression="PASS"/,
+        output.match(/data-regression="[^"]*/)?.[0] || output.slice(-600));
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
 test('real browser preserves provider error and tool identities after diagnostic overflow',
   { skip: !process.env.SNAP_BROWSER_TEST && 'Set SNAP_BROWSER_TEST=1 to run Chrome' }, () => {
     assert.ok(chrome, 'Chrome is required for the browser regression');
@@ -148,14 +234,17 @@ test('real browser defers tool continuation while a newer customer interruption 
       acceptedUsers:new Map([[old,{turnId:'turn_older',revision:1}]]),
       committedInputs:[],inputResults:new Map(),inputCursor:0,pendingInputs:[],
       contextOrder:[old,'out_older_tool'],completedOutputs:new Set(['out_older_tool']),
-      toolOutputs:new Set(),requests:new Map(),responseOwners:new Map(),outputOwners:new Map(),
+      toolOutputs:new Set(),requests:new Map(),
+      responseOwners:new Map([['resp_older_tool',{itemId:old,requestId:'req_older_tool'}]]),outputOwners:new Map(),
       doneResponses:new Set(),responses:[],responseTexts:new Map(),firstUseful:new Map(),
       activeRequest:null,processingResponse:false,toolPending:false,speechActive:false,
-      pendingToolOutput:{id:'tool_result_ack',itemId:old,guidance:'Continue.',toolChoice:'none'}};
+      pendingToolOutput:{itemId:old,callId:'call_older_tool',responseId:'resp_older_tool',
+        eventId:'evt_older_tool',output:'{"accepted":true}',guidance:'Continue.',toolChoice:'none'}};
     voice=v;
     voiceEvent(v,{type:'input_audio_buffer.speech_started'});
     voiceEvent(v,{type:'conversation.item.created',previous_item_id:'out_older_tool',
-      item:{id:'tool_result_ack',type:'function_call_output'}});
+      item:{id:'tool_result_ack',type:'function_call_output',call_id:'call_older_tool',
+        output:'{"accepted":true}'}});
     if(sent.length||!v.readyContinuation)throw Error('tool continuation ignored active speech');
     voiceEvent(v,{type:'input_audio_buffer.speech_stopped'});
     if(sent.length)throw Error('speech stop requested older continuation before commit');

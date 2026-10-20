@@ -52,3 +52,17 @@ At completion report: files and behavior versions changed; what was **VERIFIED**
 8. Deploy the exact reviewed artifact, verify production health **and** critical customer journeys, and record rollback status.
 
 Stage 1A evidence includes the preserved local evaluation and deployed Live Lab. Stage 1B includes the capability proofs in SNDISH-015 and the expressly authorized V1 Dashboard Milestones 0–1 in SNDISH-026. The Stage 1A Live Lab remains a separate release surface; Stage 1B staging evidence cannot be treated as a production release.
+
+## Mandatory AI assignment routing and token efficiency (owner-approved 2026-10-20)
+
+Whenever PM or any agent drafts an instruction to be pasted into another Snap n Dish chat/agent (Architecture & Planning, Engineering, QA & Release, or another), put **all five fields at the very beginning of the copyable assignment itself**, not merely in accompanying commentary:
+
+- **SEND TO:** exact destination chat/agent.
+- **MODEL:** exact recommended model available to the operator.
+- **EFFORT:** explicit available thinking setting (Light, Medium, High, Extra High, or Ultra).
+- **TASK:** concise, bounded objective.
+- **AUTHORIZATION:** read-only, planning, implementation, staging, production, or other exact permission and prohibitions.
+
+Use the lowest capable model and effort that preserve correctness. Suggested starting points, subject to actual model availability and measured performance: Architecture & Planning — GPT-6 Sol / Medium; Engineering — GPT-6.1 Sol / Medium; QA & Release routine verification — GPT-6 Luna / Light; routine documentation/status — GPT-6 Luna / Light. Escalate to Sol High for difficult engineering, safety/security or regression work; use Astra High/Extra High/Ultra only for demonstrably difficult architecture, concurrency or high-risk decisions. Do not assert a model is cheaper without verified pricing/usage. The assignment header must override defaults when warranted and give a brief reason for any expensive escalation.
+
+Do not run repeated full-repository investigations or model calls when existing verified evidence suffices. Distinguish development-agent token usage from the application's customer-facing API costs. This efficiency rule **never** weakens food safety, security, customer authority, independent QA, testing, governance, or release approval. Agents cannot change the selected model/effort in the operator's UI; they must clearly recommend the setting. This rule governs future task handoffs and does not itself authorize any product, infrastructure or deployment change.

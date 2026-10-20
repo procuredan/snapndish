@@ -270,6 +270,14 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 - **Recovery / boundary:** Keep `20ba6552-9bbe-4de4-9098-3c64098a648e` as the control code rollback and the verified pre-deploy D1 recovery bookmark private. No routine D1 restore, Phase B activation, production deployment or Milestone 2 work follows from this correction.
 - **Supersedes:** None; this implements SNDISH-029's requirement that diagnostic failures not interfere with Talk It.
 
+### SNDISH-031 — Provider-assigned Realtime function-output identity
+
+- **Date / owner:** 2026-10-20; Snap n Dish product owner, via the Talk It Function-Output Protocol Correction Engineering GO.
+- **Decision:** Starting from exact source `c3ded7a864685a4e03a54082f8f0cb51acf24827`, omit the optional client-generated `item.id` from bridge-version Realtime function-call output. Keep the outgoing event ID, provider `call_id`, originating customer input and accepted or rejected backend result. A returned provider item may enter explicit response context and release one continuation only when its ID, type, call ID, output and pending response owner match. Duplicates remain single-use; mismatches fail closed; newer customer input still wins through the existing scheduler.
+- **Reason / proof:** The owner microphone control committed a meal but the provider rejected the 37-character custom output item ID with `string_above_max_length`; Talk It then closed without its spoken continuation. Require D1-compatible accepted/rejected and idempotency regressions, browser acknowledgment and currentness sequences, full local/browser suite, exact-source CI, isolated staging verification and a real microphone meal-selection continuation. Retain the old Worker `aee452b1-1fbf-4c3d-b074-9ea589dfb17d` as code rollback, with a fresh private D1 recovery point before deployment.
+- **Boundary:** No model, voice, VAD, microphone, interruption, response-scheduling, culinary, Shopping, dashboard or migration changes. Do not restore D1 for a routine code rollback. Production and Milestone 2 remain excluded. The separate speaker/headphone cough comparison is a diagnostic test only and authorizes no microphone configuration change.
+- **Supersedes:** None; this narrows the SNDISH-028 tool-continuation protocol while retaining its ownership and currentness safeguards.
+
 ## Open decisions — no authority may be invented
 
 1. Stage 1A quality result and owner benchmark/human review; the current prototype tests are not that decision.
@@ -278,3 +286,11 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 4. General product staging/prod resources, release artifact and rollback/restore procedure beyond this isolated Stage 1A Lab.
 5. Realtime voice, image, and notification providers and limits after the appropriate prototype gate.
 6. Owner-approved culinary quality, latency and full-session cost thresholds.
+
+### SNDISH-032 — Mandatory agent model and effort assignment headers
+
+- **Date / owner:** 2026-10-20; Snap n Dish product owner, explicit instruction to persist the operating rule in GitHub.
+- **Decision:** Every PM-to-agent or agent-to-agent copyable instruction must begin with SEND TO, MODEL, EFFORT, TASK, and AUTHORIZATION inside the assignment. Choose the least costly capable available model and thinking effort; default Architecture to GPT-6 Sol / Medium, Engineering to GPT-6.1 Sol / Medium, routine QA to GPT-6 Luna / Light, with evidence-based escalation. Name the reason for expensive escalation. Model/effort recommendations do not automatically change Codex UI settings.
+- **Reason:** Avoid repeated expensive high-effort analysis of routine tasks, prevent ambiguous handoffs, and reduce development token waste while maintaining correctness.
+- **Scope / proof:** Applies to all future Snap n Dish task handoffs, including other chats. A handoff lacking the header is incomplete and must be corrected before use. Never weaken food safety, privacy, security, acceptance gates, independent QA or release authorization to save tokens. This is governance only; no runtime or production change is authorized.
+- **Supersedes:** None.
