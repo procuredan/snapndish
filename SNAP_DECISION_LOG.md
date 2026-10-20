@@ -239,6 +239,14 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 - **Deferred decisions:** Real customer sign-in and providers require a separately approved verified integration plan. Commercial data retention, deletion, derived culinary knowledge, images and rights, multi-cook Shopping/reset, collections actions, retrieval, membership and billing require later authorization or policy. Approved visual mockups must be recovered before visual fidelity can be claimed.
 - **Supersedes:** Prior Stage 1B prototype scope only where it excluded this expressly authorized dashboard foundation. Earlier culinary behavior and production gates remain binding.
 
+### SNDISH-027 — Talk It diagnostics and empty-transcript recovery on isolated staging
+
+- **Date / owner:** 2026-10-20; Snap n Dish product owner, via the Talk It Reliability Engineering GO.
+- **Decision:** Start from exact source `8ac984849394794e972eca4f5f4df609972658e8` on a separate branch. First add bounded, content-free Realtime lifecycle diagnostics and verify them with a real microphone on isolated Stage 1B staging. Only after reviewing that evidence, make an empty transcription nonterminal if user/assistant/tool association can remain correct. Preserve natural interruption, application authority, migration 0011, the dashboard acceptance-result correction, and the current model, voice, transcription model, VAD settings, prompts and generation path.
+- **Scope / proof:** Use the privately preserved October 20 catfish exchange as the primary regression sequence. Cover empty transcripts before, during and after responses, cancellations, late/duplicate events, tool continuation, accepted meal and Shopping persistence, local and browser tests, exact-source CI, real microphone staging verification, and code rollback. Diagnostics contain no audio, transcript text, prompts, credentials or full provider payloads. Production and Milestone 2 are excluded.
+- **Stop boundary:** If the event evidence exposes broader response scheduling or association ambiguity, stop before a speculative recovery change and return evidence to Architecture. The pre-change Stage 1B Worker `fb3cdc64-b5ea-44a9-86a0-2696d1a619f3` is immediate code rollback; routine code rollback does not restore D1.
+- **Supersedes:** None. Existing Stage 1B and production safeguards remain binding.
+
 ## Open decisions — no authority may be invented
 
 1. Stage 1A quality result and owner benchmark/human review; the current prototype tests are not that decision.

@@ -1111,6 +1111,45 @@ async function voiceEvent(request, env, id) {
   return json({ error: 'INVALID_VOICE_EVENT' }, 400);
 }
 
+const VOICE_DIAGNOSTIC_KINDS = new Set([
+  'voice_connected', 'mic_ended', 'data_channel_open', 'data_channel_closed', 'data_channel_error',
+  'peer_connection_state', 'ice_connection_state', 'speech_started', 'speech_stopped',
+  'input_committed', 'transcription_completed', 'transcription_failed', 'response_created',
+  'audio_transcript_started', 'audio_transcript_done', 'response_done', 'provider_error', 'shutdown',
+]);
+const VOICE_STOP_REASONS = new Set([
+  'manual', 'empty_transcript', 'sync_error', 'data_channel_closed', 'connect_error', 'new_conversation',
+]);
+function boundedVoiceDiagnostics(input) {
+  if (!input || !Array.isArray(input.events) || input.events.length > 64 ||
+    !VOICE_STOP_REASONS.has(input.stopReason)) return null;
+  const providerId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{4,128}$/.test(value);
+  const allowedStatus = new Set(['in_progress', 'completed', 'cancelled', 'failed', 'incomplete', 'other']);
+  const allowedConnection = new Set(['new', 'connecting', 'connected', 'disconnected', 'failed', 'closed', 'checking', 'completed']);
+  const allowedOutcome = new Set(['empty', 'nonempty', 'failed']);
+  const events = [];
+  for (const item of input.events) {
+    if (!item || !VOICE_DIAGNOSTIC_KINDS.has(item.kind) ||
+      !Number.isSafeInteger(item.seq) || item.seq < 1 || item.seq > 100_000 ||
+      !Number.isSafeInteger(item.ms) || item.ms < 0 || item.ms > 3_600_000 ||
+      (item.itemId != null && !providerId(item.itemId)) ||
+      (item.responseId != null && !providerId(item.responseId)) ||
+      (item.status != null && !allowedStatus.has(item.status)) ||
+      (item.connection != null && !allowedConnection.has(item.connection)) ||
+      (item.outcome != null && !allowedOutcome.has(item.outcome))) return null;
+    events.push({ seq: item.seq, ms: item.ms, kind: item.kind,
+      ...(item.itemId ? { item_id: item.itemId } : {}),
+      ...(item.responseId ? { response_id: item.responseId } : {}),
+      ...(item.status ? { status: item.status } : {}),
+      ...(item.connection ? { connection: item.connection } : {}),
+      ...(item.outcome ? { outcome: item.outcome } : {}) });
+  }
+  if (!events.every((item, index) => index === 0 || item.seq > events[index - 1].seq)) return null;
+  return { version: 1, stop_reason: input.stopReason,
+    dropped: Number.isSafeInteger(input.dropped) && input.dropped >= 0 && input.dropped <= 100_000
+      ? input.dropped : 0, events };
+}
+
 async function stopVoice(request, env, id) {
   const input = await bodyJson(request);
   const voiceId = input.voiceSessionId, at = now();
@@ -1118,12 +1157,22 @@ async function stopVoice(request, env, id) {
   const failureCode = input.failureCode == null ? null : input.failureCode;
   if (failureCode !== null && (typeof failureCode !== 'string' || !/^[A-Z_0-9]{3,64}$/.test(failureCode)))
     return json({ error: 'INVALID_VOICE_FAILURE_CODE' }, 400);
-  await env.DB.batch([
+  const writes = await env.DB.batch([
     env.DB.prepare('UPDATE voice_sessions SET closed_at=?,error_code=COALESCE(?,error_code) WHERE id=? AND session_id=? AND closed_at IS NULL')
       .bind(at, failureCode, voiceId, id),
     env.DB.prepare('UPDATE sessions SET active_voice_id=NULL,active_voice_until=NULL WHERE id=? AND active_voice_id=?')
       .bind(id, voiceId),
   ]);
+  if (conditionalUpdateMatched(writes[0])) {
+    try {
+      const diagnostic = boundedVoiceDiagnostics(input.diagnostics);
+      if (diagnostic) {
+        const session = await getSession(env.DB, id);
+        if (session) await event(env.DB, id, null, session.revision, 'voice_lifecycle',
+          { voice_session_id: voiceId, ...diagnostic });
+      }
+    } catch { /* Diagnostics must never affect voice shutdown. */ }
+  }
   return json({ stopped: true });
 }
 

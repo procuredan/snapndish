@@ -1451,6 +1451,58 @@ test('Stage 1B spoken transcript uses the same context, stores usage, and reject
     { voiceSessionId: voiceId, type: 'user', itemId: 'item_voice_3', transcript: 'Late' }, cookie), e, context())).status, 409);
 });
 
+test('Talk It lifecycle diagnostics are bounded, private, idempotent, and cannot block stop', async () => {
+  const e = env();
+  e.STAGE1B_ENABLED = 'true';
+  e.BEHAVIOR_VERSION = 'stage1b-meal-package-v5.1';
+  const { id, cookie } = await createVisitorSession(e, '');
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => new Response('v=0\r\nanswer',
+    { status: 201, headers: { Location: '/v1/realtime/calls/rtc_diagnostic' } });
+  let firstId, secondId;
+  try {
+    firstId = (await (await worker.fetch(req(`/api/sessions/${id}/voice/start`, 'POST',
+      { sdp: 'v=0\r\noffer', expectedRevision: 0 }, cookie), e, context())).json()).voiceSessionId;
+  } finally { globalThis.fetch = original; }
+  const diagnostic = { stopReason: 'empty_transcript', dropped: 0, events: [
+    { seq: 1, ms: 0, kind: 'voice_connected' },
+    { seq: 2, ms: 200, kind: 'response_created', responseId: 'resp_catfish_1', status: 'in_progress' },
+    { seq: 3, ms: 400, kind: 'response_done', responseId: 'resp_catfish_1', status: 'cancelled' },
+    { seq: 4, ms: 500, kind: 'transcription_completed', itemId: 'item_empty_1', outcome: 'empty',
+      transcript: 'private catfish words', credentials: 'sk-private-test' },
+    { seq: 5, ms: 501, kind: 'shutdown' },
+  ] };
+  const stop = await worker.fetch(req(`/api/sessions/${id}/voice/stop`, 'POST',
+    { voiceSessionId: firstId, failureCode: 'EMPTY_TRANSCRIPT', diagnostics: diagnostic }, cookie), e, context());
+  assert.equal(stop.status, 200);
+  assert.equal(e.DB.raw.prepare('SELECT active_voice_id FROM sessions WHERE id=?').get(id).active_voice_id, null);
+  const saved = e.DB.raw.prepare("SELECT details_json FROM state_events WHERE kind='voice_lifecycle'").get();
+  assert.ok(saved);
+  assert.doesNotMatch(saved.details_json, /private catfish|sk-private|credentials|"transcript":/);
+  assert.deepEqual(JSON.parse(saved.details_json), { voice_session_id: firstId, version: 1,
+    stop_reason: 'empty_transcript', dropped: 0, events: [
+      { seq: 1, ms: 0, kind: 'voice_connected' },
+      { seq: 2, ms: 200, kind: 'response_created', response_id: 'resp_catfish_1', status: 'in_progress' },
+      { seq: 3, ms: 400, kind: 'response_done', response_id: 'resp_catfish_1', status: 'cancelled' },
+      { seq: 4, ms: 500, kind: 'transcription_completed', item_id: 'item_empty_1', outcome: 'empty' },
+      { seq: 5, ms: 501, kind: 'shutdown' },
+    ] });
+  await worker.fetch(req(`/api/sessions/${id}/voice/stop`, 'POST',
+    { voiceSessionId: firstId, diagnostics: diagnostic }, cookie), e, context());
+  assert.equal(e.DB.raw.prepare("SELECT COUNT(*) AS n FROM state_events WHERE kind='voice_lifecycle'").get().n, 1);
+  globalThis.fetch = async () => new Response('v=0\r\nanswer', { status: 201 });
+  try {
+    secondId = (await (await worker.fetch(req(`/api/sessions/${id}/voice/start`, 'POST',
+      { sdp: 'v=0\r\noffer', expectedRevision: 0 }, cookie), e, context())).json()).voiceSessionId;
+  } finally { globalThis.fetch = original; }
+  const bad = { stopReason: 'manual', events: [{ seq: 1, ms: 1, kind: 'unbounded_provider_payload',
+    transcript: 'private catfish words' }] };
+  assert.equal((await worker.fetch(req(`/api/sessions/${id}/voice/stop`, 'POST',
+    { voiceSessionId: secondId, diagnostics: bad }, cookie), e, context())).status, 200);
+  assert.equal(e.DB.raw.prepare('SELECT active_voice_id FROM sessions WHERE id=?').get(id).active_voice_id, null);
+  assert.equal(e.DB.raw.prepare("SELECT COUNT(*) AS n FROM state_events WHERE kind='voice_lifecycle'").get().n, 1);
+});
+
 test('Realtime initialization preserves only bounded provider diagnostics', async () => {
   const e = env();
   e.STAGE1B_ENABLED = 'true';
