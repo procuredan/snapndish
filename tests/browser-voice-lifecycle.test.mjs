@@ -11,6 +11,71 @@ const chrome = [process.env.CHROME_PATH,
   '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable']
   .filter(Boolean).find(candidate => fs.existsSync(candidate));
 
+test('real browser defers tool continuation while a newer customer interruption is being saved',
+  { skip: !process.env.SNAP_BROWSER_TEST && 'Set SNAP_BROWSER_TEST=1 to run Chrome' }, () => {
+    assert.ok(chrome, 'Chrome is required for the browser regression');
+    const fixture = String.raw`<script>
+(async()=>{
+  try{
+    const id='11111111-1111-4111-8111-111111111111',old='item_older_tool',newer='item_newer_speech';
+    session={id,revision:1,turns:[],meal_plan:null,meal_revision:0,shopping_revision:0,
+      cooking_progress:null,cooking_revision:0};
+    const sent=[],posted=[];
+    window.fetch=async(url,options)=>{
+      if(!url.endsWith('/voice/events'))throw Error('unexpected request');
+      const body=JSON.parse(options.body);posted.push(body);
+      if(body.type!=='user')throw Error('older tool result reached application authority');
+      return new Response(JSON.stringify({turnId:'turn_newer',revision:2,status:'accepted'}));
+    };
+    const v={id:'22222222-2222-4222-8222-222222222222',sessionId:id,generation,
+      behaviorVersion:'stage1b-meal-package-v5.1+voice-bridge-v2',work:Promise.resolve(),
+      dc:{readyState:'open',send:value=>sent.push(JSON.parse(value))},
+      acceptedUsers:new Map([[old,{turnId:'turn_older',revision:1}]]),
+      committedInputs:[],inputResults:new Map(),inputCursor:0,pendingInputs:[],
+      contextOrder:[old,'out_older_tool'],completedOutputs:new Set(['out_older_tool']),
+      toolOutputs:new Set(),requests:new Map(),responseOwners:new Map(),outputOwners:new Map(),
+      doneResponses:new Set(),responses:[],responseTexts:new Map(),firstUseful:new Map(),
+      activeRequest:null,processingResponse:false,toolPending:false,speechActive:false,
+      pendingToolOutput:{id:'tool_result_ack',itemId:old,guidance:'Continue.',toolChoice:'none'}};
+    voice=v;
+    voiceEvent(v,{type:'input_audio_buffer.speech_started'});
+    voiceEvent(v,{type:'conversation.item.created',previous_item_id:'out_older_tool',
+      item:{id:'tool_result_ack',type:'function_call_output'}});
+    if(sent.length||!v.readyContinuation)throw Error('tool continuation ignored active speech');
+    voiceEvent(v,{type:'input_audio_buffer.speech_stopped'});
+    if(sent.length)throw Error('speech stop requested older continuation before commit');
+    voiceEvent(v,{type:'input_audio_buffer.committed',item_id:newer});
+    voiceEvent(v,{type:'conversation.item.created',previous_item_id:'tool_result_ack',
+      item:{id:newer,type:'message',role:'user'}});
+    if(sent.length)throw Error('older continuation raced pending transcription');
+    voiceEvent(v,{type:'conversation.item.input_audio_transcription.completed',item_id:newer,
+      transcript:'Actually, use the oven.'});
+    await v.work;
+    const requests=sent.filter(event=>event.type==='response.create');
+    if(posted.length!==1||requests.length!==1||
+      requests[0].response.metadata.snap_origin_item_id!==newer||
+      requests[0].response.metadata.snap_phase!=='input')
+      throw Error('tool continuation superseded the genuine customer interruption');
+    document.body.dataset.regression='PASS';
+  }catch(error){document.body.dataset.regression='FAIL: '+(error.stack||String(error))}
+})();
+</script>`;
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'snapndish-voice-tool-race-'));
+    try {
+      const file = path.join(directory, 'voice.html');
+      fs.writeFileSync(file, page('chat', 'browser-test', true, true, true).replace('</body>', fixture + '</body>'));
+      let output;
+      try { output = execFileSync(chrome, ['--headless=new', '--no-first-run',
+        '--no-default-browser-check', '--disable-gpu', '--disable-background-networking',
+        '--virtual-time-budget=6000', `--user-data-dir=${path.join(directory, 'chrome-profile')}`,
+        '--dump-dom', `file://${file}`],
+      { encoding: 'utf8', timeout: 35_000, stdio: ['ignore', 'pipe', 'ignore'] }); }
+      catch (error) { output = error.stdout || error.output?.[1] || ''; }
+      assert.match(output, /data-regression="PASS"/,
+        output.match(/data-regression="[^"]*/)?.[0] || output.slice(-600));
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+  });
+
 test('real browser preserves catfish cancellation, skips empty audio, and owns subsequent trout speech',
   { skip: !process.env.SNAP_BROWSER_TEST && 'Set SNAP_BROWSER_TEST=1 to run Chrome' }, () => {
     assert.ok(chrome, 'Chrome is required for the browser regression');
@@ -29,7 +94,7 @@ test('real browser preserves catfish cancellation, skips empty audio, and owns s
     let stopped;const sent=[],posted=[];
     const stopSeen=new Promise(resolve=>{stopped=resolve});
     window.fetch=async(url,options)=>{
-      if(url.endsWith('/voice/events')){const body=JSON.parse(options.body);posted.push(body);if(body.type==='user'){saved.revision=3;saved.turns.push({id:'turn_trout',role:'user',text:body.transcript,revision:3});return new Response(JSON.stringify({turnId:'turn_trout',revision:3,status:'accepted'}))}if(body.type==='assistant')return new Response(JSON.stringify({status:'accepted'}));throw Error('Unexpected voice event')}
+      if(url.endsWith('/voice/events')){const body=JSON.parse(options.body);posted.push(body);if(body.type==='user'){saved.revision++;const turnId='turn_'+saved.revision;saved.turns.push({id:turnId,role:'user',text:body.transcript,revision:saved.revision});return new Response(JSON.stringify({turnId,revision:saved.revision,status:'accepted'}))}if(body.type==='assistant')return new Response(JSON.stringify({status:body.responseId==='resp_stale'?'stale_rejected':'accepted'}));throw Error('Unexpected voice event')}
       if(url.endsWith('/voice/stop')){stopped(JSON.parse(options.body));return new Response(JSON.stringify({stopped:true}))}
       if(url.endsWith('/api/sessions/'+id))return new Response(JSON.stringify(saved));
       throw Error('Unexpected request '+url);
@@ -78,6 +143,35 @@ test('real browser preserves catfish cancellation, skips empty audio, and owns s
     voiceEvent(v,{type:'response.done',response:{...secondResponse,status:'completed',output:[]}});
     if(posted.length!==2||posted[1].type!=='assistant'||posted[1].userItemId!==next)
       throw Error('accepted reply did not retain its originating customer input');
+    const older='item_late_original',newer='item_late_correction';
+    voiceEvent(v,{type:'input_audio_buffer.committed',item_id:older});
+    voiceEvent(v,{type:'conversation.item.created',previous_item_id:'out_trout_next',
+      item:{id:older,type:'message',role:'user'}});
+    voiceEvent(v,{type:'conversation.item.input_audio_transcription.completed',item_id:older,
+      transcript:'Cook the trout over charcoal.'});
+    await v.work;
+    const staleRequest=sent.filter(event=>event.type==='response.create').at(-1);
+    if(staleRequest?.response.metadata.snap_origin_item_id!==older)
+      throw Error('original input did not receive a response request');
+    voiceEvent(v,{type:'response.created',response:{id:'resp_stale',
+      metadata:staleRequest.response.metadata,conversation_id:'conv_catfish'}});
+    voiceEvent(v,{type:'input_audio_buffer.committed',item_id:newer});
+    voiceEvent(v,{type:'conversation.item.created',previous_item_id:older,
+      item:{id:newer,type:'message',role:'user'}});
+    voiceEvent(v,{type:'conversation.item.input_audio_transcription.completed',item_id:newer,
+      transcript:'Actually, use the oven.'});
+    await v.work;
+    voiceEvent(v,{type:'conversation.item.created',previous_item_id:newer,
+      item:{id:'out_stale',type:'message',role:'assistant'}});
+    voiceEvent(v,{type:'response.done',response:{id:'resp_stale',
+      metadata:staleRequest.response.metadata,conversation_id:'conv_catfish',status:'completed',
+      output:[{id:'out_stale',type:'message',content:[{transcript:'Use charcoal.'}]}]}});
+    await v.work;
+    const correctionRequest=sent.filter(event=>event.type==='response.create').at(-1);
+    if(correctionRequest?.response.metadata.snap_origin_item_id!==newer||
+      correctionRequest.response.input.some(ref=>ref.id==='out_stale')||
+      !correctionRequest.response.input.some(ref=>ref.id==='out_trout_next'))
+      throw Error('stale completed output contaminated the next response context');
     await endVoice();
     const stop=await stopSeen;
     if(stop.failureCode||stop.diagnostics.stopReason!=='manual')
@@ -90,7 +184,7 @@ test('real browser preserves catfish cancellation, skips empty audio, and owns s
       JSON.stringify(stop.diagnostics).includes('A whole fried catfish'))
       throw Error('private transcript content entered diagnostics');
     await new Promise(resolve=>setTimeout(resolve,20));
-    if(voice!==null||session?.revision!==3||session?.turns?.length!==4)
+    if(voice!==null||session?.revision!==5||session?.turns?.length!==6)
       throw Error('accepted conversation did not survive voice stop');
     document.body.dataset.regression='PASS';
   }catch(error){document.body.dataset.regression='FAIL: '+(error.stack||String(error))}

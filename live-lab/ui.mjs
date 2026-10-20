@@ -78,8 +78,9 @@ document.getElementById('chat').addEventListener('submit',async function(e){e.pr
 retry.onclick=()=>{const p=pending();if(p&&session?.id===p.sessionId)sendTurn(p)};
 function voicePost(v,payload){return fetch('/api/sessions/'+encodeURIComponent(v.sessionId)+'/voice/events',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voiceSessionId:v.id,...payload})}).then(async r=>{const result=await r.json();if(!r.ok)throw Error(result.error||'Voice transcript could not be saved');return result})}
 function voiceQueue(v,operation){v.work=v.work.then(operation).catch(error=>{if(voice===v){status.textContent=error.message||'Voice sync failed. End Talk and try again.';v.syncFailed=true;v.failureCode=/^[A-Z_0-9]{3,64}$/.test(error?.message||'')?error.message:'VOICE_SYNC_ERROR';queueMicrotask(()=>{if(voice===v)endVoice()})}})}
+function voiceOwnedVersion(v){return v.behaviorVersion?.startsWith('stage1b-cooking-v2')||v.behaviorVersion?.startsWith('stage1b-meal-package-')}
 function drainVoice(v){
-  if(v.behaviorVersion?.startsWith('stage1b-cooking-v2')||v.behaviorVersion?.startsWith('stage1b-meal-package-'))return drainVoiceV2(v);
+  if(voiceOwnedVersion(v))return drainVoiceV2(v);
   return drainVoiceLegacy(v);
 }
 function voiceContext(v,itemId){
@@ -90,7 +91,8 @@ function voiceContext(v,itemId){
   return ids.map(id=>({type:'item_reference',id}));
 }
 function requestVoiceResponse(v,itemId,phase,options={}){
-  if(v.closing||voice!==v||generation!==v.generation||v.activeRequest||v.processingResponse||v.toolPending||v.dc?.readyState!=='open')return false;
+  if(v.closing||voice!==v||generation!==v.generation||v.activeRequest||v.processingResponse||v.toolPending||
+    v.speechActive||v.inputCursor<v.committedInputs.length||v.dc?.readyState!=='open')return false;
   if(session?.revision!==v.acceptedUsers.get(itemId)?.revision){
     voiceDiagnostic(v,'input_skipped',{itemId,reason:'superseded'});return false;
   }
@@ -124,6 +126,15 @@ function scheduleVoiceResponse(v){
     if(requestVoiceResponse(v,itemId,'input'))v.pendingInputs.shift();
     return;
   }
+  if(v.readyContinuation){
+    const continuation=v.readyContinuation;v.readyContinuation=null;
+    if(session?.revision!==v.acceptedUsers.get(continuation.itemId)?.revision){
+      voiceDiagnostic(v,'input_skipped',{itemId:continuation.itemId,reason:'superseded'});return;
+    }
+    if(!requestVoiceResponse(v,continuation.itemId,'continuation',
+      {instructions:continuation.guidance,tool_choice:continuation.toolChoice}))
+      v.readyContinuation=continuation;
+  }
 }
 function processVoiceInputs(v){
   voiceQueue(v,async()=>{
@@ -139,11 +150,12 @@ function processVoiceInputs(v){
       v.acceptedUsers.set(itemId,accepted);
       if(voice===v&&!v.closing){session.revision=accepted.revision;bubble('user',result.transcript+'  · spoken');v.pendingInputs.push(itemId)}
     }
-    scheduleVoiceResponse(v);
+    drainVoice(v);scheduleVoiceResponse(v);
   });
 }
 function drainVoiceV2(v){
-  if(v.closing||voice!==v||v.toolPending||v.processingResponse)return;
+  if(v.closing||voice!==v||v.toolPending||v.processingResponse||
+    v.speechActive||v.inputCursor<v.committedInputs.length)return;
   while(v.responses.length){
     const owned=v.responses.shift(),response=owned.response,itemId=owned.itemId;
     if(response.status!=='completed'){scheduleVoiceResponse(v);continue}
@@ -177,6 +189,7 @@ function drainVoiceV2(v){
           }
           drainVoice(v);scheduleVoiceResponse(v);return;
         }
+        for(const output of response.output||[])if(output.id)v.completedOutputs.add(output.id);
         if(result.accepted&&voice===v&&generation===v.generation&&session?.id===v.sessionId){
           await load(v.sessionId,v.generation);
           syncVoiceState(v);
@@ -224,6 +237,7 @@ function drainVoiceV2(v){
     voiceQueue(v,async()=>{
       const result=await voicePost(v,{type:'assistant',responseId:response.id,userItemId:itemId,
         transcript:transcriptText,firstUsefulMs,fullMs,usage});
+      if(result.status==='accepted')for(const output of response.output||[])if(output.id)v.completedOutputs.add(output.id);
       if(voice===v&&generation===v.generation&&session?.id===v.sessionId){
         await load(v.sessionId,v.generation);
         status.textContent=result.status==='stale_rejected'?'An earlier spoken reply was superseded.':'Talk to Snap, or end Talk It to type.';
@@ -265,9 +279,7 @@ function rememberVoiceItem(v,e){
   if(v.pendingToolOutput?.id===id){
     const continuation=v.pendingToolOutput;v.pendingToolOutput=null;v.toolOutputs.add(id);
     voiceDiagnostic(v,'tool_output_created',{itemId:continuation.itemId,outputId:id});
-    if(!requestVoiceResponse(v,continuation.itemId,'continuation',
-      {instructions:continuation.guidance,tool_choice:continuation.toolChoice}))
-      scheduleVoiceResponse(v);
+    v.readyContinuation=continuation;scheduleVoiceResponse(v);
   }else scheduleVoiceResponse(v);
 }
 function voiceOwnershipFailure(v,responseId,itemId,reason){
@@ -284,7 +296,20 @@ function ownedVoiceResponse(v,response){
   }
   return request;
 }
+function voiceEventLegacy(v,e){
+  if(e.type==='input_audio_buffer.speech_started'){voiceDiagnostic(v,'speech_started');v.speechStopped=null;status.textContent='Listening…'}
+  else if(e.type==='input_audio_buffer.speech_stopped'){voiceDiagnostic(v,'speech_stopped');v.speechStopped=performance.now();status.textContent='Snap is listening and thinking…'}
+  else if(e.type==='input_audio_buffer.committed'&&e.item_id){voiceDiagnostic(v,'input_committed',{itemId:e.item_id});if(!v.userOrder.includes(e.item_id))v.userOrder.push(e.item_id)}
+  else if(e.type==='conversation.item.input_audio_transcription.completed'&&e.item_id){voiceDiagnostic(v,'transcription_completed',{itemId:e.item_id,outcome:e.transcript?.trim()?'nonempty':'empty'});if(!v.userOrder.includes(e.item_id))v.userOrder.push(e.item_id);v.transcripts.set(e.item_id,e.transcript||'');if(e.transcript?.trim()){bubble('user',e.transcript+'  · spoken');voiceQueue(v,async()=>{const accepted=await voicePost(v,{type:'user',itemId:e.item_id,transcript:e.transcript,usage:e.usage});v.acceptedUsers.set(e.item_id,accepted);session.revision=accepted.revision;drainVoice(v)})}else{v.syncFailed=true;v.failureCode='EMPTY_TRANSCRIPT';status.textContent='Speech was not clear enough to save. Talk It is ending so the transcript stays accurate.';endVoice('empty_transcript')}}
+  else if(e.type==='conversation.item.input_audio_transcription.failed')voiceDiagnostic(v,'transcription_failed',{itemId:e.item_id,outcome:'failed'});
+  else if(e.type==='response.created'&&e.response?.id)voiceDiagnostic(v,'response_created',{responseId:e.response.id,status:'in_progress'});
+  else if(e.type==='response.output_audio_transcript.delta'&&e.response_id&&e.delta){v.diagnosticFirstAudio??=new Set();if(!v.diagnosticFirstAudio.has(e.response_id)){v.diagnosticFirstAudio.add(e.response_id);voiceDiagnostic(v,'audio_transcript_started',{responseId:e.response_id})}const prior=v.responseTexts.get(e.response_id)||'';v.responseTexts.set(e.response_id,prior+e.delta);if(!v.firstUseful.has(e.response_id)&&v.speechStopped)v.firstUseful.set(e.response_id,Math.round(performance.now()-v.speechStopped));if(!v.partial){v.partial=bubble('snap','');v.partialResponseId=e.response_id}if(v.partialResponseId===e.response_id)v.partial.textContent=displayText(v.responseTexts.get(e.response_id));status.textContent='Snap is speaking…'}
+  else if(e.type==='response.output_audio_transcript.done'&&e.response_id){voiceDiagnostic(v,'audio_transcript_done',{responseId:e.response_id});if(e.transcript)v.responseTexts.set(e.response_id,e.transcript)}
+  else if(e.type==='response.done'&&e.response?.id){voiceDiagnostic(v,'response_done',{responseId:e.response.id,status:e.response.status});v.responses.push(e.response);v.partial=null;v.partialResponseId=null;drainVoice(v)}
+  else if(e.type==='error'){voiceDiagnostic(v,'provider_error');status.textContent='Talk It had a connection error. End Talk and try again.'}
+}
 function voiceEvent(v,e){if(voice!==v||generation!==v.generation)return;
+if(!voiceOwnedVersion(v))return voiceEventLegacy(v,e);
 if(e.type==='input_audio_buffer.speech_started'){voiceDiagnostic(v,'speech_started');v.speechActive=true;v.speechStopped=null;status.textContent='Listening…'}
 else if(e.type==='input_audio_buffer.speech_stopped'){voiceDiagnostic(v,'speech_stopped');v.speechStopped=performance.now();status.textContent='Snap is listening and thinking…'}
 else if(e.type==='input_audio_buffer.committed'&&e.item_id){voiceDiagnostic(v,'input_committed',{itemId:e.item_id});v.speechActive=false;if(!v.committedInputs.includes(e.item_id)){v.committedInputs.push(e.item_id);processVoiceInputs(v)}}
@@ -295,7 +320,7 @@ else if(e.type==='response.created'&&e.response?.id){const owner=ownedVoiceRespo
 else if((e.type==='response.output_item.added'||e.type==='response.output_item.done')&&e.response_id&&e.item?.id){voiceDiagnostic(v,e.type.endsWith('added')?'response_output_started':'response_output_done',{responseId:e.response_id,outputId:e.item.id});v.outputOwners.set(e.item.id,e.response_id)}
 else if(e.type==='response.output_audio_transcript.delta'&&e.response_id&&e.delta){if(!v.responseOwners.has(e.response_id)){voiceOwnershipFailure(v,e.response_id,null,'missing');return}v.diagnosticFirstAudio??=new Set();if(!v.diagnosticFirstAudio.has(e.response_id)){v.diagnosticFirstAudio.add(e.response_id);voiceDiagnostic(v,'audio_transcript_started',{responseId:e.response_id})}const prior=v.responseTexts.get(e.response_id)||'';v.responseTexts.set(e.response_id,prior+e.delta);if(!v.firstUseful.has(e.response_id)&&v.speechStopped)v.firstUseful.set(e.response_id,Math.round(performance.now()-v.speechStopped));if(v.awaitingUsefulSpeech&&/\S/.test(e.delta)){recordVisibleMetric(v.awaitingUsefulSpeech.kind,v.awaitingUsefulSpeech.turnId,v.awaitingUsefulSpeech.started);v.awaitingUsefulSpeech=null}if(!v.partial){v.partial=bubble('snap','');v.partialResponseId=e.response_id}if(v.partialResponseId===e.response_id)v.partial.textContent=displayText(v.responseTexts.get(e.response_id));status.textContent='Snap is speaking…'}
 else if(e.type==='response.output_audio_transcript.done'&&e.response_id){voiceDiagnostic(v,'audio_transcript_done',{responseId:e.response_id});if(e.transcript)v.responseTexts.set(e.response_id,e.transcript)}
-else if(e.type==='response.done'&&e.response?.id){const response=e.response;if(v.doneResponses.has(response.id))return;const owner=ownedVoiceResponse(v,response);if(!owner||owner.responseId!==response.id){voiceOwnershipFailure(v,response.id,owner?.itemId,'mismatch');return}if(response.status==='completed'&&(!Array.isArray(response.output)||response.output.some(item=>typeof item.id!=='string'||!item.id))){voiceOwnershipFailure(v,response.id,owner.itemId,'missing');return}v.doneResponses.add(response.id);v.activeRequest=null;const reason=['turn_detected','client_cancelled','max_output_tokens','content_filter'].includes(response.status_details?.reason)?response.status_details.reason:'unknown';voiceDiagnostic(v,'response_done',{responseId:response.id,itemId:owner.itemId,requestId:owner.requestId,status:response.status,reason});if(response.status==='completed')for(const item of response.output||[])v.completedOutputs.add(item.id);if((response.status!=='completed'||((v.behaviorVersion?.startsWith('stage1b-cooking-v2')||v.behaviorVersion?.startsWith('stage1b-meal-package-'))&&response.output?.some(item=>item.type==='function_call')))&&v.partial?.parentElement)v.partial.parentElement.remove();v.responses.push({response,itemId:owner.itemId});v.partial=null;v.partialResponseId=null;drainVoice(v)}
+else if(e.type==='response.done'&&e.response?.id){const response=e.response;if(v.doneResponses.has(response.id))return;const owner=ownedVoiceResponse(v,response);if(!owner||owner.responseId!==response.id){voiceOwnershipFailure(v,response.id,owner?.itemId,'mismatch');return}if(response.status==='completed'&&(!Array.isArray(response.output)||response.output.some(item=>typeof item.id!=='string'||!item.id))){voiceOwnershipFailure(v,response.id,owner.itemId,'missing');return}v.doneResponses.add(response.id);v.activeRequest=null;const reason=['turn_detected','client_cancelled','max_output_tokens','content_filter'].includes(response.status_details?.reason)?response.status_details.reason:'unknown';voiceDiagnostic(v,'response_done',{responseId:response.id,itemId:owner.itemId,requestId:owner.requestId,status:response.status,reason});if((response.status!=='completed'||((v.behaviorVersion?.startsWith('stage1b-cooking-v2')||v.behaviorVersion?.startsWith('stage1b-meal-package-'))&&response.output?.some(item=>item.type==='function_call')))&&v.partial?.parentElement)v.partial.parentElement.remove();v.responses.push({response,itemId:owner.itemId});v.partial=null;v.partialResponseId=null;drainVoice(v)}
 else if(e.type==='error'){voiceDiagnostic(v,'provider_error',{requestId:v.activeRequest?.requestId,itemId:v.activeRequest?.itemId,reason:'failed'});v.syncFailed=true;v.failureCode='REALTIME_PROVIDER_ERROR';endVoice('provider_error')}}
 async function endVoice(reason='manual'){const v=voice;if(!v)return;v.closing=true;voiceDiagnostic(v,'shutdown');voice=null;talk.disabled=true;talk.textContent='Talk It';input.disabled=false;photo.disabled=false;send.disabled=false;try{let pending;do{pending=v.work;await pending}while(v.work!==pending);if(v.id)await fetch('/api/sessions/'+encodeURIComponent(v.sessionId)+'/voice/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({voiceSessionId:v.id,failureCode:v.failureCode,diagnostics:{stopReason:reason,dropped:v.diagnosticDropped||0,events:v.diagnostics||[]}})})}catch{}finally{v.mic?.getTracks().forEach(track=>track.stop());v.dc?.close();v.pc?.close();snapAudio.srcObject=null;talk.disabled=false;if(session?.id===v.sessionId)await load(v.sessionId,generation);status.textContent=v.syncFailed?'Voice ended with an unsaved transcript. Review the conversation.':'Talk It ended. Continue by typing or start Talk It again.'}}
 async function startVoice(){if(!stage1b||voice)return;if(!session){await create();if(!session)return}if(pending()){status.textContent='Wait for Snap to finish the pending reply first.';return}const v={sessionId:session.id,generation,work:Promise.resolve(),userOrder:[],responses:[],transcripts:new Map(),acceptedUsers:new Map(),responseTexts:new Map(),firstUseful:new Map(),speechStopped:null,speechActive:false,syncFailed:false,failureCode:null,pendingTool:null,toolPending:false,repairAttempts:new Map(),awaitingUsefulSpeech:null,baseInstructions:null,cookingInstructions:null,behaviorVersion:null,committedInputs:[],inputResults:new Map(),inputCursor:0,pendingInputs:[],contextOrder:[],completedOutputs:new Set(),toolOutputs:new Set(),requests:new Map(),responseOwners:new Map(),outputOwners:new Map(),doneResponses:new Set(),activeRequest:null,processingResponse:false,pendingToolOutput:null};voice=v;talk.disabled=true;send.disabled=true;input.disabled=true;photo.disabled=true;status.textContent='Connecting Talk It…';try{v.mic=await navigator.mediaDevices.getUserMedia({audio:true});if(voice!==v)throw Error('Voice session changed');v.pc=new RTCPeerConnection();v.pc.onconnectionstatechange=()=>voiceDiagnostic(v,'peer_connection_state',{connection:v.pc.connectionState});v.pc.oniceconnectionstatechange=()=>voiceDiagnostic(v,'ice_connection_state',{connection:v.pc.iceConnectionState});v.mic.getAudioTracks()[0].onended=()=>voiceDiagnostic(v,'mic_ended');v.pc.ontrack=e=>{snapAudio.srcObject=e.streams[0];snapAudio.play().catch(()=>status.textContent='Tap Talk It to enable audio playback.')};v.pc.addTrack(v.mic.getAudioTracks()[0],v.mic);v.dc=v.pc.createDataChannel('oai-events');v.dc.onmessage=message=>{try{voiceEvent(v,JSON.parse(message.data))}catch{status.textContent='Could not read a voice event.'}};v.dc.onopen=()=>voiceDiagnostic(v,'data_channel_open');v.dc.onerror=()=>voiceDiagnostic(v,'data_channel_error');v.dc.onclose=()=>{if(voice===v){voiceDiagnostic(v,'data_channel_closed');endVoice('data_channel_closed')}};const offer=await v.pc.createOffer();await v.pc.setLocalDescription(offer);if(v.pc.iceGatheringState!=='complete')await new Promise(resolve=>{const changed=()=>{if(v.pc.iceGatheringState==='complete'){clearTimeout(timeout);v.pc.removeEventListener('icegatheringstatechange',changed);resolve()}};const timeout=setTimeout(()=>{v.pc.removeEventListener('icegatheringstatechange',changed);resolve()},4000);v.pc.addEventListener('icegatheringstatechange',changed)});const r=await fetch('/api/sessions/'+encodeURIComponent(v.sessionId)+'/voice/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sdp:v.pc.localDescription.sdp,expectedRevision:session.revision})});const result=await r.json();if(!r.ok)throw Error(result.error||'Talk It could not connect');v.id=result.voiceSessionId;v.baseInstructions=result.syncInstructions||null;v.cookingInstructions=result.cookingSyncInstructions||null;v.behaviorVersion=result.behaviorVersion||null;await v.pc.setRemoteDescription({type:'answer',sdp:result.sdp});voiceDiagnostic(v,'voice_connected');if(voice!==v)throw Error('Voice session changed');talk.disabled=false;talk.textContent='End Talk It';status.textContent='Talk to Snap. Your words and Snap’s reply will appear here.'}catch(error){if(voice===v){const reason=error.message||'Talk It could not start.';await endVoice('connect_error');status.textContent=reason}}}
