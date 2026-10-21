@@ -673,6 +673,12 @@ async function startVoice(request, env, id) {
   try { input = JSON.parse(raw); } catch { return json({ error: 'INVALID_JSON' }, 400); }
   if (typeof input.sdp !== 'string' || !input.sdp.startsWith('v=0') || input.sdp.length > 24_000 ||
     !Number.isInteger(input.expectedRevision)) return json({ error: 'INVALID_VOICE_START' }, 400);
+  const observeInterruption = input.interruptionMode === 'observe';
+  if (input.interruptionMode != null && input.interruptionMode !== 'observe')
+    return json({ error: 'INVALID_INTERRUPTION_MODE' }, 400);
+  if (observeInterruption && (env.RELEASE_ENV !== 'staging' ||
+    env.TALK_INTERRUPTION_EXPERIMENT_ENABLED !== 'true' || !isBridgeVersion(env.BEHAVIOR_VERSION)))
+    return json({ error: 'INTERRUPTION_EXPERIMENT_DISABLED' }, 403);
   const session = await getSession(env.DB, id);
   if (!session) return json({ error: 'NOT_FOUND' }, 404);
   if (session.revision !== input.expectedRevision ||
@@ -730,7 +736,7 @@ async function startVoice(request, env, id) {
        audio: {
         input: { transcription: { model: 'gpt-live-transcribe' }, turn_detection: {
           type: 'semantic_vad', ...(isBridgeVersion(behavior.version)
-            ? { create_response: false, interrupt_response: true } : {}) } },
+            ? { create_response: false, interrupt_response: !observeInterruption } : {}) } },
         output: { voice: 'marin' },
       } }));
     const safetyId = await mac(env.COOKIE_SIGNING_KEY, session.customer_id || id);
@@ -754,9 +760,11 @@ async function startVoice(request, env, id) {
     await env.DB.prepare('UPDATE voice_sessions SET provider_call_id=?,connect_ms=? WHERE id=?')
       .bind(callId, connectMs, voiceId).run();
     await event(env.DB, id, null, session.revision, 'voice_connected',
-      { voice_session_id: voiceId, model: VOICE_MODEL, behavior_version: voiceBehaviorVersion, connect_ms: connectMs });
+      { voice_session_id: voiceId, model: VOICE_MODEL, behavior_version: voiceBehaviorVersion, connect_ms: connectMs,
+        ...(observeInterruption ? { interruption_mode: 'observe' } : {}) });
     return json({ voiceSessionId: voiceId, sdp, model: VOICE_MODEL,
       behaviorVersion: voiceBehaviorVersion, connectMs,
+      ...(observeInterruption ? { interruptionMode: 'observe' } : {}),
       ...(isNextFlow(behavior.version) ? { syncInstructions: instructions } : {}),
       ...(isCookingVersion(behavior.version) ? { cookingSyncInstructions:
         ([COOKING_QUALITY_BEHAVIOR_VERSION, COOKING_QUALITY_V51_BEHAVIOR_VERSION].includes(behavior.version)
@@ -1116,7 +1124,7 @@ async function voiceEvent(request, env, id) {
 const VOICE_DIAGNOSTIC_KINDS = new Set([
   'voice_connected', 'mic_ended', 'data_channel_open', 'data_channel_closed', 'data_channel_error',
   'peer_connection_state', 'ice_connection_state', 'speech_started', 'speech_stopped',
-  'input_committed', 'transcription_completed', 'transcription_failed', 'response_created',
+  'input_committed', 'transcription_delta', 'transcription_completed', 'transcription_failed', 'response_created',
   'audio_transcript_started', 'audio_transcript_done', 'response_done', 'provider_error', 'shutdown',
   'input_item_created', 'response_requested', 'response_output_started', 'response_output_done',
   'tool_output_created', 'response_ownership_rejected', 'input_skipped',

@@ -278,6 +278,14 @@ The entries below record explicit Snap n Dish owner direction in the product ref
 - **Boundary:** No model, voice, VAD, microphone, interruption, response-scheduling, culinary, Shopping, dashboard or migration changes. Do not restore D1 for a routine code rollback. Production and Milestone 2 remain excluded. The separate speaker/headphone cough comparison is a diagnostic test only and authorizes no microphone configuration change.
 - **Supersedes:** None; this narrows the SNDISH-028 tool-continuation protocol while retaining its ownership and currentness safeguards.
 
+### SNDISH-032 — Controlled Talk It interruption provider experiment
+
+- **Date / owner:** 2026-10-21; Snap n Dish product owner, approving the controlled Talk It interruption experiment.
+- **Decision:** Start a separate branch from exact source `edbb457e44cf586d180aa5a52042bed85b002568`. First make `interrupt_response:false` opt-in for newly started isolated Stage 1B staging test sessions, keeping `create_response:false`, semantic VAD, the current model/voice/transcription model, response ownership, tool acknowledgment, culinary behavior and accepted-state authority. Default sessions retain automatic interruption as the control. Observe provider configuration, output-buffer lifecycle and bounded content-free input transcription delta timing.
+- **Conditional second phase:** Only after actual provider evidence establishes a safe contract, evaluate one identity-bound manual interruption of a verified current response, including completed generation with buffered audio. Never cancel absent generation or let a late input affect a newer response. No speculative retry or replay. If reliable association or responsive natural interruption cannot be demonstrated, stop and return evidence to Architecture.
+- **Proof / recovery:** Require focused and full browser-enabled tests, exact-source CI, staging Access/binding/migration/recovery checks, independent QA, and real microphone controls for quiet, incidental sounds, deliberate interruption, tool/meal/Shopping continuity, reload and manual ending. Measure owner-heard responsiveness separately from provider timestamps. Preserve Worker `3a8120b9-2cd3-485b-893d-e97084f15ad9` as code rollback; routine code rollback does not restore D1. No migration, microphone/VAD sensitivity, culinary/model/prompt, production or Milestone 2 changes are authorized.
+- **Supersedes:** SNDISH-028's automatic-interruption setting only for the explicitly opted-in experiment. All ownership, privacy, acceptance, control and release safeguards remain.
+
 ## Open decisions — no authority may be invented
 
 1. Stage 1A quality result and owner benchmark/human review; the current prototype tests are not that decision.

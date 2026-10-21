@@ -2413,3 +2413,58 @@ test('failed V5.1 package repair creates no dashboard history', async () => {
     assert.equal(e.DB.raw.prepare('SELECT COUNT(*) AS n FROM dashboard_selection_history').get().n, 0);
   } finally { globalThis.fetch = original; }
 });
+
+test('interruption observation is opt-in, isolated-staging-only and preserves the voice contract', async () => {
+  const original = globalThis.fetch;
+  const setups = [];
+  globalThis.fetch = async (url, options) => {
+    assert.equal(url, 'https://api.openai.com/v1/realtime/calls');
+    setups.push(JSON.parse(options.body.get('session')));
+    return new Response('v=0\r\nanswer', { status: 201 });
+  };
+  try {
+    for (const [release, enabled, mode, expected] of [
+      ['staging', 'true', undefined, 201], ['staging', 'true', 'observe', 201],
+      ['production', 'true', 'observe', 403], ['staging', undefined, 'observe', 403],
+      ['staging', 'true', 'manual', 400],
+    ]) {
+      const e = env();
+      Object.assign(e, { STAGE1B_ENABLED: 'true', BEHAVIOR_VERSION: 'stage1b-meal-package-v5.1',
+        RELEASE_ENV: release, TALK_INTERRUPTION_EXPERIMENT_ENABLED: enabled });
+      const { id, allCookies } = await createVisitorSession(e, 'Synthetic contract control.');
+      const r = await worker.fetch(req(`/api/sessions/${id}/voice/start`, 'POST',
+        { sdp: 'v=0\r\noffer', expectedRevision: 0, ...(mode ? { interruptionMode: mode } : {}) },
+        allCookies), e, context());
+      assert.equal(r.status, expected);
+      if (expected !== 201) {
+        assert.equal(e.DB.raw.prepare('SELECT COUNT(*) AS n FROM voice_sessions').get().n, 0);
+        continue;
+      }
+      const result = await r.json();
+      assert.equal(result.interruptionMode, mode);
+      const setup = setups.at(-1);
+      assert.deepEqual(setup.audio.input.turn_detection,
+        { type: 'semantic_vad', create_response: false, interrupt_response: mode !== 'observe' });
+      assert.equal(setup.model, 'gpt-realtime-2.1');
+      assert.equal(setup.audio.output.voice, 'marin');
+      assert.equal(setup.audio.input.transcription.model, 'gpt-live-transcribe');
+      if (mode) {
+        const stop = await worker.fetch(req(`/api/sessions/${id}/voice/stop`, 'POST', {
+          voiceSessionId: result.voiceSessionId, diagnostics: { stopReason: 'manual', dropped: 0,
+            events: [{ seq: 1, ms: 321, kind: 'transcription_delta', itemId: 'item_synthetic',
+              eventId: 'event_synthetic', outcome: 'nonempty', transcript: 'never retain this' }] },
+        }, allCookies), e, context());
+        assert.equal(stop.status, 200);
+        const event = e.DB.raw.prepare("SELECT details_json FROM state_events WHERE kind='voice_lifecycle'").get();
+        const diagnostic = JSON.parse(event.details_json);
+        assert.equal(diagnostic.events[0].kind, 'transcription_delta');
+        assert.equal(diagnostic.events[0].item_id, 'item_synthetic');
+        assert.doesNotMatch(event.details_json, /never retain/);
+      }
+    }
+    assert.equal(setups.length, 2);
+    const control = structuredClone(setups[0]), observe = structuredClone(setups[1]);
+    observe.audio.input.turn_detection.interrupt_response = true;
+    assert.deepEqual(observe, control, 'the experiment changed another provider setting or culinary instructions');
+  } finally { globalThis.fetch = original; }
+});
