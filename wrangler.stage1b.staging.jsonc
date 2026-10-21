@@ -24,6 +24,7 @@
   "vars": {
     "RELEASE_ENV": "staging",
     "STAGE1B_ENABLED": "true",
+    "TALK_INTERRUPTION_EXPERIMENT_ENABLED": "true",
     "MODEL": "gpt-6-astra",
     "REASONING_EFFORT": "medium",
     "BEHAVIOR_VERSION": "stage1b-meal-package-v5.1",

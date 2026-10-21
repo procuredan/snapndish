@@ -570,3 +570,57 @@ test('real browser orders transcription results and fails closed on mismatched r
         output.match(/data-regression="[^"]*/)?.[0] || output.slice(-600));
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });
+
+test('real browser observation records early input timing without canceling or clearing owned speech',
+  { skip: !process.env.SNAP_BROWSER_TEST && 'Set SNAP_BROWSER_TEST=1 to run Chrome' }, () => {
+    assert.ok(chrome);
+    const fixture = String.raw`<script>
+(async()=>{
+  try{
+    const id='11111111-1111-4111-8111-111111111111',item='item_original';
+    const sent=[];
+    session={id,revision:1,turns:[],meal_plan:null,meal_revision:0,shopping_revision:0,cooking_revision:0};
+    const owner={itemId:item,requestId:'req_original',phase:'input',responseId:'resp_original'};
+    const v={sessionId:id,generation,interruptionMode:'observe',
+      behaviorVersion:'stage1b-meal-package-v5.1+voice-bridge-v2',work:Promise.resolve(),
+      dc:{readyState:'open',send:x=>sent.push(JSON.parse(x))},activeRequest:owner,
+      acceptedUsers:new Map([[item,{revision:1}]]),committedInputs:[],inputResults:new Map(),inputCursor:0,
+      pendingInputs:[],contextOrder:[item],completedOutputs:new Set(),toolOutputs:new Set(),
+      requests:new Map([['req_original',owner]]),responseOwners:new Map([['resp_original',owner]]),
+      outputOwners:new Map(),doneResponses:new Set(),responses:[],responseTexts:new Map(),firstUseful:new Map()};
+    voice=v;
+    voiceEvent(v,{type:'session.updated',session:{audio:{input:{turn_detection:{
+      type:'semantic_vad',create_response:false,interrupt_response:false}}}}});
+    voiceEvent(v,{type:'output_audio_buffer.started',response_id:'resp_original',event_id:'event_playback'});
+    voiceEvent(v,{type:'input_audio_buffer.speech_started',item_id:'item_interruption',event_id:'event_speech'});
+    voiceEvent(v,{type:'conversation.item.input_audio_transcription.delta',item_id:'item_interruption',
+      event_id:'event_delta',delta:'Wait, private customer content'});
+    voiceEvent(v,{type:'conversation.item.input_audio_transcription.delta',item_id:'item_interruption',
+      event_id:'event_duplicate',delta:'more private content'});
+    if(voice!==v||v.activeRequest!==owner||sent.length)
+      throw Error('observation changed response ownership or sent interruption controls');
+    const deltas=v.diagnostics.filter(e=>e.kind==='transcription_delta');
+    if(deltas.length!==1||deltas[0].outcome!=='nonempty'||deltas[0].itemId!=='item_interruption'||
+      JSON.stringify(v.diagnostics).includes('private'))throw Error('early timing was lost or transcript leaked');
+    voiceEvent(v,{type:'conversation.item.input_audio_transcription.completed',item_id:'item_incidental',transcript:''});
+    await v.work;
+    if(voice!==v||sent.length||v.activeRequest!==owner)throw Error('empty input terminated or interrupted speech');
+    if(v.diagnostics.some(e=>e.kind==='output_buffer_cleared'))throw Error('fixture invented a provider clear');
+    voice=null;document.body.dataset.regression='PASS';
+  }catch(error){document.body.dataset.regression='FAIL: '+(error.stack||String(error))}
+})();
+</script>`;
+    const directory=fs.mkdtempSync(path.join(os.tmpdir(),'snapndish-observe-interruption-'));
+    try {
+      const file=path.join(directory,'voice.html');
+      fs.writeFileSync(file,page('chat','browser-test',true,true,true).replace('</body>',fixture+'</body>'));
+      let output;
+      try { output=execFileSync(chrome,['--headless=new','--no-first-run','--no-default-browser-check',
+        '--disable-gpu','--disable-background-networking','--virtual-time-budget=6000',
+        `--user-data-dir=${path.join(directory,'profile')}`,'--dump-dom',`file://${file}`],
+        {encoding:'utf8',timeout:35000,stdio:['ignore','pipe','ignore']}); }
+      catch(error){output=error.stdout||'';}
+      assert.match(output,/data-regression="PASS"/,
+        output.match(/data-regression="[^"]*/)?.[0]||output.slice(-600));
+    } finally { fs.rmSync(directory,{recursive:true,force:true}); }
+  });
